@@ -1,0 +1,97 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Elagoht/collage-snippets-highlighter/main/schemas/collage-plugin-manifest.schema.json",
+  "name": "elagoht/live",
+  "description": "A collage plugin that keeps parts of a page current in the browser: it serves a small client script that refreshes the fragments a page opened with WithFragmentPath, on an interval or when the server pushes a change over an event stream.",
+  "repository": "https://github.com/Elagoht/collage-live",
+  "templateFunctions": [
+    {
+      "name": "liveClient",
+      "signature": "liveClient",
+      "insert": "liveClient",
+      "doc": "The collage-live client script. Put it in the layout's `<head>`; elements marked `data-collage-fragment` are then kept current."
+    }
+  ],
+  "attributes": [
+    {
+      "name": "data-collage-fragment",
+      "value": "{{fragmentURL \"${1:page}\" \"${2:fragment}\"}}",
+      "doc": "collage-live: the fragment path whose answer fills the element."
+    },
+    {
+      "name": "data-collage-interval",
+      "value": "${1:2s}",
+      "doc": "collage-live: fetch the fragment on this interval (`500ms`, `2s`, `1m`)."
+    },
+    {
+      "name": "data-collage-push",
+      "value": null,
+      "doc": "collage-live: take the fragment from the stream when the server pushes it."
+    },
+    {
+      "name": "data-collage-swap",
+      "value": "${1|morph,replace|}",
+      "doc": "collage-live: `morph` patches the DOM in place, so a focused input keeps what is typed."
+    },
+    {
+      "name": "data-collage-target",
+      "value": "#${1:result}",
+      "doc": "collage-live: on a form, submit with fetch and put the answer into this element."
+    }
+  ],
+  "snippets": {
+    "collage-live client": {
+      "language": "html",
+      "prefix": "cliveclient",
+      "body": [
+        "{{liveClient}}"
+      ],
+      "description": "collage-live: the client script, in the layout's head"
+    },
+    "collage-live section": {
+      "language": "html",
+      "prefix": "clive",
+      "body": [
+        "<section data-collage-fragment=\"{{fragmentURL \"${1:page}\" \"${2:fragment}\"}}\" ${3|data-collage-push,data-collage-interval=\"2s\"|}>",
+        "  {{slot \"${2:fragment}\"}}",
+        "</section>"
+      ],
+      "description": "collage-live: an element kept current from a fragment path"
+    }
+  },
+  "config": {
+    "type": "object",
+    "description": "A collage plugin that keeps parts of a page current in the browser: it serves a small client script that refreshes the fragments a page opened with WithFragmentPath, on an interval or when the server pushes a change over an event stream.",
+    "properties": {
+      "keepAlive": {
+        "type": "string",
+        "description": "KeepAlive is how often an idle stream sends a comment, so a proxy that closes quiet connections leaves it open. Default 25s.",
+        "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$",
+        "examples": [
+          "30s",
+          "5m"
+        ]
+      },
+      "maxFragments": {
+        "type": "integer",
+        "description": "MaxFragments caps how many fragments one stream may watch. Default 32."
+      },
+      "maxStreamAge": {
+        "type": "string",
+        "description": "MaxStreamAge closes a stream after it has been open this long, and the client reconnects at once. A stream renders with the cookies it was opened with, so a reader who signed out elsewhere keeps receiving what the old cookie reads until it reconnects; this bounds how long. Nothing is lost — the reconnect sends what changed. Zero, the default, never closes one.",
+        "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$",
+        "examples": [
+          "30s",
+          "5m"
+        ]
+      },
+      "noStream": {
+        "type": "boolean",
+        "description": "NoStream turns the event stream off. The client then only polls: an element marked data-collage-push without an interval is polled every five seconds."
+      },
+      "prefix": {
+        "type": "string",
+        "description": "Prefix is where the client and the stream are served: the client at <prefix>client/client.js, the stream at <prefix>stream/. It begins and ends with a slash. Default \"/_live/\"."
+      }
+    }
+  }
+}

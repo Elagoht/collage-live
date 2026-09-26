@@ -251,6 +251,12 @@ channel, ETags — so htmx or a script of your own works against the same server
 
 ## Changes
 
+### v0.2.2
+
+- `collage.json`: the plugin described to editors — its template functions,
+  snippets and configuration schema — for the Collage Snippets & Highlighter
+  extension and any tool reading it.
+
 ### v0.2.1
 
 - A tab coming back from the back-forward cache receives pushes again; the worker
