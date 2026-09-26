@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/Elagoht/collage/pkg/collage"
@@ -18,6 +20,10 @@ type Message struct {
 	URL  string     `json:"url"`
 	HTML string     `json:"html,omitempty"`
 	Head []HeadItem `json:"head,omitempty"`
+	// ETag is the ETag a request to URL would be answered with for this HTML, so
+	// the client keeps one ETag per element whether the content came by polling
+	// or by push.
+	ETag string `json:"etag,omitempty"`
 	// Stale reports that the fragment could not be rendered. The client keeps
 	// what it shows and marks it stale; why is in the server's log, not here.
 	Stale bool `json:"stale,omitempty"`
@@ -31,6 +37,26 @@ type HeadItem struct {
 	HTML string `json:"html"`
 }
 
+// Watch is one fragment a subscription watches: its URL, and the ETag of the copy
+// the client already shows, if it knows one.
+type Watch struct {
+	URL  string
+	ETag string
+}
+
+// ParseWatches reads the watches a client sent, one per value: the fragment's URL,
+// optionally followed by "#" and the ETag it holds — "/live/cpu#\"1a2b\"". A URL
+// path cannot contain "#", so the split is unambiguous. A transport passes it the
+// request's "f" query values.
+func ParseWatches(values []string) []Watch {
+	watches := make([]Watch, 0, len(values))
+	for _, value := range values {
+		url, etag, _ := strings.Cut(value, "#")
+		watches = append(watches, Watch{URL: url, ETag: etag})
+	}
+	return watches
+}
+
 // ErrTooManyFragments is returned by Subscribe for more URLs than MaxFragments.
 var ErrTooManyFragments = errors.New("live: too many fragments for one stream")
 
@@ -38,9 +64,13 @@ var ErrTooManyFragments = errors.New("live: too many fragments for one stream")
 var ErrNoFragments = errors.New("live: no fragment to watch")
 
 // Subscription is one reader watching some fragments: what an open stream or
-// WebSocket holds. A transport subscribes, sends Initial and the Cookie, then loops
-// on Wait and sends what it returns, until Wait fails or the connection ends, and
-// then calls Close.
+// WebSocket holds. A transport subscribes, sets the Cookie and sends Initial, then
+// loops on Wait and sends what it returns, until Wait fails or the connection
+// ends, and then calls Close.
+//
+// It renders with the request it was made from, cookies included, for as long as
+// it lives. A reader who signs out in another tab keeps receiving what the old
+// cookie reads until the stream reconnects; Config.MaxStreamAge bounds that.
 type Subscription struct {
 	hub     *hub
 	request *http.Request
@@ -49,59 +79,66 @@ type Subscription struct {
 
 	mu      sync.Mutex
 	tags    map[string][]string // url → the tags its last render depended on
+	sent    map[string]string   // url → the ETag of the copy the client holds
 	pending map[string]Message
 	order   []string
 	ready   chan struct{}
 	closed  bool
 }
 
-// Subscribe starts watching urls — fragment paths, as {{fragmentURL}} built them —
-// for the reader r came from.
+// Subscribe starts watching fragment paths, as {{fragmentURL}} built them, for the
+// reader r came from.
 //
 // Each is rendered once now, for r: that is how the subscription learns which tags
 // the fragment depends on, and it hands the client the current state, which may
 // have moved on since the page was served — or since a stream dropped and
-// reconnected. Replaying the messages a reconnecting client missed would be
-// pointless: a fragment is a state, not a log, and only the latest one matters.
+// reconnected. A watch whose ETag matches the render is left out of Initial: the
+// client already shows it. Replaying the messages a reconnecting client missed
+// would be pointless: a fragment is a state, not a log.
 //
 // A URL that is not a fragment path fails the subscription with
 // collage.ErrUnknownFragmentPath, so nothing is reachable over a stream that is
 // not reachable over HTTP.
-func (p *Plugin) Subscribe(r *http.Request, urls []string) (*Subscription, error) {
+func (p *Plugin) Subscribe(r *http.Request, watches []Watch) (*Subscription, error) {
 	if p.host == nil {
 		return nil, errors.New("live: the plugin has not been initialised")
 	}
-	urls = dedupe(urls)
-	if len(urls) == 0 {
+	watches = dedupe(watches)
+	if len(watches) == 0 {
 		return nil, ErrNoFragments
 	}
-	if max := p.cfg.MaxFragments; max > 0 && len(urls) > max {
-		return nil, fmt.Errorf("%w: %d, at most %d", ErrTooManyFragments, len(urls), max)
+	if max := p.cfg.MaxFragments; max > 0 && len(watches) > max {
+		return nil, fmt.Errorf("%w: %d, at most %d", ErrTooManyFragments, len(watches), max)
 	}
 
 	s := &Subscription{
 		hub:     p.hub,
 		request: r,
-		tags:    make(map[string][]string, len(urls)),
+		tags:    make(map[string][]string, len(watches)),
+		sent:    make(map[string]string, len(watches)),
 		pending: make(map[string]Message),
 		ready:   make(chan struct{}, 1),
 	}
-	for _, url := range urls {
-		render, err := p.host.RenderFragment(r, collage.FragmentRequest{Path: url})
+	for _, w := range watches {
+		render, err := p.host.RenderFragment(r, collage.FragmentRequest{Path: w.URL})
 		if errors.Is(err, collage.ErrUnknownFragmentPath) {
 			return nil, err
 		}
 		if err != nil {
-			p.log.Warn("live: render failed", "url", url, "err", err)
-			s.initial = append(s.initial, Message{URL: url, Stale: true})
-			s.tags[url] = nil
+			p.log.Warn("live: render failed", "url", w.URL, "err", err)
+			s.initial = append(s.initial, Message{URL: w.URL, Stale: true})
+			s.tags[w.URL] = nil
 			continue
 		}
 		if render.Cookie != nil && s.cookie == nil {
 			s.cookie = render.Cookie
 		}
-		s.tags[url] = render.DependencyTags
-		s.initial = append(s.initial, messageOf(url, render))
+		s.tags[w.URL] = render.DependencyTags
+		s.sent[w.URL] = render.ETag
+		if w.ETag != "" && w.ETag == render.ETag {
+			continue
+		}
+		s.initial = append(s.initial, messageOf(w.URL, render))
 	}
 	if !p.hub.add(s) {
 		return nil, ErrClosed
@@ -109,7 +146,8 @@ func (p *Plugin) Subscribe(r *http.Request, urls []string) (*Subscription, error
 	return s, nil
 }
 
-// Initial is each watched fragment as it stands now, to send first.
+// Initial is each watched fragment as it stands now, to send first — except those
+// the client said it already shows.
 func (s *Subscription) Initial() []Message { return s.initial }
 
 // Cookie is the forgery cookie the forms in the fragments need, when the request
@@ -185,22 +223,44 @@ func (s *Subscription) watching(tags map[string]bool) []string {
 	return urls
 }
 
-// push queues msg and records the tags its render depended on.
-func (s *Subscription) push(msg Message, tags []string, retag bool) {
+// deliver queues a fresh render of url, unless the client already holds that
+// copy: an invalidation that changed nothing this fragment shows sends nothing.
+func (s *Subscription) deliver(url string, render *collage.FragmentRender) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return
 	}
-	if retag {
-		s.tags[msg.URL] = tags
+	s.tags[url] = render.DependencyTags
+	if s.sent[url] == render.ETag {
+		s.mu.Unlock()
+		return
 	}
+	s.sent[url] = render.ETag
+	s.queueLocked(messageOf(url, render))
+	s.mu.Unlock()
+	s.signal()
+}
+
+// deliverStale queues a message saying url could not be rendered.
+func (s *Subscription) deliverStale(url string) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	// Whatever the client holds now, the next good render is news to it.
+	delete(s.sent, url)
+	s.queueLocked(Message{URL: url, Stale: true})
+	s.mu.Unlock()
+	s.signal()
+}
+
+func (s *Subscription) queueLocked(msg Message) {
 	if _, queued := s.pending[msg.URL]; !queued {
 		s.order = append(s.order, msg.URL)
 	}
 	s.pending[msg.URL] = msg
-	s.mu.Unlock()
-	s.signal()
 }
 
 // hub is every open subscription, and the one worker that re-renders for them.
@@ -209,10 +269,12 @@ type hub struct {
 	subs   map[*Subscription]struct{}
 	closed bool
 
-	// tags waiting for the worker. One worker, draining them all at once, rather
-	// than a goroutine per invalidation: two renders of one fragment running side
-	// by side can finish in either order, and the older one arriving last would
-	// leave the reader looking at the past.
+	// tags waiting for the worker. One worker, draining them a batch at a time,
+	// rather than a goroutine per invalidation: two renders of one fragment for
+	// one reader running side by side can finish in either order, and the older
+	// one arriving last would leave the reader looking at the past. Within a
+	// batch each reader's fragment is rendered once, so those renders run in
+	// parallel without that risk.
 	tags    map[string]bool
 	wake    chan struct{}
 	started bool
@@ -225,8 +287,8 @@ func newHub() *hub {
 // queue hands tags to the worker, starting it the first time.
 func (h *hub) queue(p *Plugin, tags []string) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.closed {
-		h.mu.Unlock()
 		return
 	}
 	for _, tag := range tags {
@@ -236,7 +298,8 @@ func (h *hub) queue(p *Plugin, tags []string) {
 		h.started = true
 		go h.work(p)
 	}
-	h.mu.Unlock()
+	// Under the lock, because close closes wake under it: a send made after
+	// unlocking could land on a closed channel, and that panics. It never blocks.
 	select {
 	case h.wake <- struct{}{}:
 	default:
@@ -308,8 +371,8 @@ func (h *hub) close() {
 	}
 }
 
-// invalidate re-renders every watched fragment that depended on one of tags, and
-// queues it for its subscription.
+// invalidate re-renders every watched fragment that depended on one of touched,
+// and queues it for its subscription.
 //
 // A render that is Shared — the same for every reader — is made once per URL and
 // handed to everyone watching that URL. Any other render may hold one reader's
@@ -317,45 +380,95 @@ func (h *hub) close() {
 // subscription's own request, and never handed to another. Getting this wrong
 // would send one reader's page to another, which is why the framework, not this
 // plugin, decides what Shared means.
+//
+// The renders run on a bounded number of goroutines. A URL is rendered first for
+// one of its readers; only when that render is not Shared is it rendered for the
+// others, each once. Batches still run one after another.
 func (h *hub) invalidate(p *Plugin, touched map[string]bool) {
-	shared := make(map[string]*collage.FragmentRender)
+	readers := make(map[string][]*Subscription)
+	var urls []string
 	for _, s := range h.snapshot() {
 		for _, url := range s.watching(touched) {
-			if render, ok := shared[url]; ok {
-				s.push(messageOf(url, render), render.DependencyTags, true)
-				continue
+			if _, seen := readers[url]; !seen {
+				urls = append(urls, url)
 			}
-			render, err := p.host.RenderFragment(s.request, collage.FragmentRequest{Path: url})
-			if err != nil {
-				if s.request.Context().Err() == nil {
-					p.log.Warn("live: render failed", "url", url, "err", err)
-					s.push(Message{URL: url, Stale: true}, nil, false)
-				}
-				continue
-			}
-			if render.Shared {
-				shared[url] = render
-			}
-			s.push(messageOf(url, render), render.DependencyTags, true)
+			readers[url] = append(readers[url], s)
 		}
 	}
+	sort.Strings(urls)
+
+	// Two rounds, so no render waits on a slot another is holding: first one
+	// reader per URL, then — for the URLs whose render was not Shared — the rest.
+	type job struct {
+		s   *Subscription
+		url string
+	}
+	var mu sync.Mutex
+	var rest []job
+	parallel(len(urls), func(i int) {
+		url := urls[i]
+		subs := readers[url]
+		first, ok := h.render(p, subs[0], url)
+		if ok && first.Shared {
+			for _, s := range subs[1:] {
+				s.deliver(url, first)
+			}
+			return
+		}
+		mu.Lock()
+		for _, s := range subs[1:] {
+			rest = append(rest, job{s, url})
+		}
+		mu.Unlock()
+	})
+	parallel(len(rest), func(i int) { h.render(p, rest[i].s, rest[i].url) })
+}
+
+// parallel runs fn for 0..n-1 on at most GOMAXPROCS goroutines, and returns when
+// all have finished.
+func parallel(n int, fn func(int)) {
+	limit := make(chan struct{}, runtime.GOMAXPROCS(0))
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		limit <- struct{}{}
+		go func() {
+			defer func() { <-limit; wg.Done() }()
+			fn(i)
+		}()
+	}
+	wg.Wait()
+}
+
+// render renders url for s and delivers it, or delivers a stale message.
+func (h *hub) render(p *Plugin, s *Subscription, url string) (*collage.FragmentRender, bool) {
+	render, err := p.host.RenderFragment(s.request, collage.FragmentRequest{Path: url})
+	if err != nil {
+		if s.request.Context().Err() == nil {
+			p.log.Warn("live: render failed", "url", url, "err", err)
+			s.deliverStale(url)
+		}
+		return nil, false
+	}
+	s.deliver(url, render)
+	return render, true
 }
 
 func messageOf(url string, render *collage.FragmentRender) Message {
-	msg := Message{URL: url, HTML: string(render.HTML)}
+	msg := Message{URL: url, HTML: string(render.HTML), ETag: render.ETag}
 	for _, item := range render.Head {
 		msg.Head = append(msg.Head, HeadItem{Area: item.Area, Key: item.Key, HTML: string(item.HTML)})
 	}
 	return msg
 }
 
-func dedupe(urls []string) []string {
-	seen := make(map[string]bool, len(urls))
-	out := make([]string, 0, len(urls))
-	for _, url := range urls {
-		if url != "" && !seen[url] {
-			seen[url] = true
-			out = append(out, url)
+func dedupe(watches []Watch) []Watch {
+	seen := make(map[string]bool, len(watches))
+	out := make([]Watch, 0, len(watches))
+	for _, w := range watches {
+		if w.URL != "" && !seen[w.URL] {
+			seen[w.URL] = true
+			out = append(out, w)
 		}
 	}
 	return out

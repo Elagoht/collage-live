@@ -59,7 +59,7 @@ const Name = "elagoht/live"
 // DefaultPrefix is where the plugin serves its client and its stream.
 const DefaultPrefix = "/_live/"
 
-//go:embed client.js
+//go:embed client.js worker.js
 var clientFS embed.FS
 
 // Config is the plugin's configuration.
@@ -68,14 +68,20 @@ type Config struct {
 	// <prefix>client/client.js, the stream at <prefix>stream/. It begins and ends
 	// with a slash. Default "/_live/".
 	Prefix string `json:"prefix"`
-	// NoStream turns the event stream off. The client then only polls, and an
-	// element marked data-collage-push without an interval is left alone.
+	// NoStream turns the event stream off. The client then only polls: an element
+	// marked data-collage-push without an interval is polled every five seconds.
 	NoStream bool `json:"noStream"`
 	// KeepAlive is how often an idle stream sends a comment, so a proxy that
 	// closes quiet connections leaves it open. Default 25s.
 	KeepAlive Duration `json:"keepAlive"`
 	// MaxFragments caps how many fragments one stream may watch. Default 32.
 	MaxFragments int `json:"maxFragments"`
+	// MaxStreamAge closes a stream after it has been open this long, and the
+	// client reconnects at once. A stream renders with the cookies it was opened
+	// with, so a reader who signed out elsewhere keeps receiving what the old
+	// cookie reads until it reconnects; this bounds how long. Nothing is lost —
+	// the reconnect sends what changed. Zero, the default, never closes one.
+	MaxStreamAge Duration `json:"maxStreamAge"`
 }
 
 // Duration is a time.Duration that reads from JSON as a string: "25s", "1m".
@@ -123,7 +129,7 @@ func NewWith(cfg Config) *Plugin {
 }
 
 func (p *Plugin) Name() string    { return Name }
-func (p *Plugin) Version() string { return "0.1.0" }
+func (p *Plugin) Version() string { return "0.2.0" }
 
 // UseTransport has the client push over t instead of the event stream. It is for
 // the plugin serving t, and must be called before the application is built.
@@ -211,6 +217,11 @@ func (p *Plugin) OnCacheInvalidate(_ context.Context, ev *collage.CacheInvalidat
 	return nil
 }
 
+// MaxStreamAge is how long a push connection may stay open before it is closed
+// for the client to reconnect; zero is forever. A transport of another plugin
+// honours it as the event stream does. See Config.MaxStreamAge.
+func (p *Plugin) MaxStreamAge() time.Duration { return time.Duration(p.cfg.MaxStreamAge) }
+
 // ClientPath is the URL the client script is served at.
 func (p *Plugin) ClientPath() string { return p.clientPrefix() + "client.js" }
 
@@ -232,6 +243,8 @@ func (p *Plugin) clientTag() template.HTML {
 	var b strings.Builder
 	b.WriteString(`<script src="`)
 	b.WriteString(template.HTMLEscapeString(p.ClientPath()))
+	b.WriteString(`" data-collage-worker="`)
+	b.WriteString(template.HTMLEscapeString(p.clientPrefix() + "worker.js"))
 	b.WriteString(`"`)
 	switch {
 	case p.transport != nil:

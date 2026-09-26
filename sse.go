@@ -20,15 +20,19 @@ const writeTimeout = 10 * time.Second
 
 // sseHandler serves the event stream: one per page, whatever it watches.
 //
-//	GET /_live/stream/?f=/live/cpu&f=/posts/hello/comments
+//	GET /_live/stream/?f=/live/cpu&f=/posts/hello/comments%23%221a2b%22
 //
 //	event: fragment
 //	id: 3
-//	data: {"url":"/live/cpu","html":"<p>…</p>","head":[…]}
+//	data: {"url":"/live/cpu","html":"<p>…</p>","head":[…],"etag":"\"9f…\""}
 //
-// One stream per page rather than per fragment, because a browser opens at most
-// six connections to an origin over HTTP/1.1, and a page of seven live panels
-// would otherwise stop loading anything else. The data is JSON rather than the
+// A watch may carry the ETag of the copy the client shows after a "#"; a fragment
+// still at that ETag is not sent when the stream opens. See ParseWatches.
+//
+// One stream per browser rather than per fragment or per tab, because a browser
+// opens at most six connections to an origin over HTTP/1.1 across all its tabs:
+// the client's shared worker opens this for every tab at once, with the union of
+// what they watch. The data is JSON rather than the
 // markup split over data: lines, so the URL and the hoisted items travel in the
 // same message as the markup they belong to.
 type sseHandler struct {
@@ -41,7 +45,7 @@ func (h *sseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	sub, err := h.plugin.Subscribe(r, r.URL.Query()["f"])
+	sub, err := h.plugin.Subscribe(r, ParseWatches(r.URL.Query()["f"]))
 	switch {
 	case errors.Is(err, ErrClosed):
 		http.Error(w, "shutting down", http.StatusServiceUnavailable)
@@ -98,7 +102,20 @@ func (h *sseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	keepAlive := time.Duration(h.plugin.cfg.KeepAlive)
+	var expired <-chan time.Time
+	if age := time.Duration(h.plugin.cfg.MaxStreamAge); age > 0 {
+		timer := time.NewTimer(age)
+		defer timer.Stop()
+		expired = timer.C
+	}
 	for {
+		select {
+		case <-expired:
+			// Ended from here, the browser reconnects with the cookies it holds
+			// now; see Config.MaxStreamAge.
+			return
+		default:
+		}
 		wait, cancel := context.WithTimeout(r.Context(), keepAlive)
 		msgs, err := sub.Wait(wait)
 		cancel()

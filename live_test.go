@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -50,7 +52,7 @@ func newSite(t *testing.T, plugin *live.Plugin) *site {
 		if c, err := rc.Request.Cookie("user"); err == nil {
 			name = c.Value
 		}
-		return name, []string{"greeting"}, nil
+		return fmt.Sprintf("%s %d", name, s.cpu.Load()), []string{"greeting"}, nil
 	}).Build()
 	footer := collage.NewFragment("footer", "footer.html").Build()
 	page := collage.NewFragment("page", "page.html").
@@ -128,7 +130,7 @@ func TestClientTagAndScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := readAll(t, res)
-	want := `<script src="/_live/client/client.js" data-collage-stream="/_live/stream/" data-collage-transport="sse" defer></script>`
+	want := `<script src="/_live/client/client.js" data-collage-worker="/_live/client/worker.js" data-collage-stream="/_live/stream/" data-collage-transport="sse" defer></script>`
 	if !strings.Contains(body, want) {
 		t.Errorf("page does not include the client:\n%s", body)
 	}
@@ -139,6 +141,13 @@ func TestClientTagAndScript(t *testing.T) {
 	}
 	if script := readAll(t, res); res.StatusCode != http.StatusOK || !strings.Contains(script, "data-collage-fragment") {
 		t.Errorf("client.js = %d, %d bytes", res.StatusCode, len(script))
+	}
+	res, err = http.Get(s.server.URL + "/_live/client/worker.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if script := readAll(t, res); res.StatusCode != http.StatusOK || !strings.Contains(script, "onconnect") {
+		t.Errorf("worker.js = %d, %d bytes", res.StatusCode, len(script))
 	}
 }
 
@@ -201,17 +210,18 @@ func TestStream_PersonalFragmentsStayPersonal(t *testing.T) {
 	s := newSite(t, live.New())
 	ada := s.open(t, "f=/live/hello", &http.Cookie{Name: "user", Value: "ada"})
 	bo := s.open(t, "f=/live/hello", &http.Cookie{Name: "user", Value: "bo"})
-	if got := ada.next().HTML; got != "<p>hello ada</p>" {
+	if got := ada.next().HTML; got != "<p>hello ada 0</p>" {
 		t.Fatalf("ada's initial = %q", got)
 	}
-	if got := bo.next().HTML; got != "<p>hello bo</p>" {
+	if got := bo.next().HTML; got != "<p>hello bo 0</p>" {
 		t.Fatalf("bo's initial = %q", got)
 	}
+	s.cpu.Store(1)
 	_ = s.app.InvalidateTags(context.Background(), "greeting")
-	if got := ada.next().HTML; got != "<p>hello ada</p>" {
+	if got := ada.next().HTML; got != "<p>hello ada 1</p>" {
 		t.Errorf("ada was pushed %q", got)
 	}
-	if got := bo.next().HTML; got != "<p>hello bo</p>" {
+	if got := bo.next().HTML; got != "<p>hello bo 1</p>" {
 		t.Errorf("bo was pushed %q", got)
 	}
 }
@@ -264,7 +274,7 @@ func TestCloseStreams(t *testing.T) {
 func TestSubscription_Coalesces(t *testing.T) {
 	plugin := live.New()
 	s := newSite(t, plugin)
-	sub, err := plugin.Subscribe(httptest.NewRequest(http.MethodGet, "/", nil), []string{"/live/cpu", "/live/cpu"})
+	sub, err := plugin.Subscribe(httptest.NewRequest(http.MethodGet, "/", nil), live.ParseWatches([]string{"/live/cpu", "/live/cpu"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,4 +316,68 @@ func readAll(t *testing.T, res *http.Response) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// A watch carrying the ETag of what the client shows is not sent again when the
+// stream opens; one whose copy is out of date is.
+func TestStream_SkipsWhatTheClientHolds(t *testing.T) {
+	s := newSite(t, live.New())
+	s.cpu.Store(1)
+	e := s.open(t, "f=/live/cpu&f=/live/footer", nil)
+	etags := map[string]string{}
+	for range 2 {
+		msg := e.next()
+		if msg.ETag == "" {
+			t.Fatalf("message without an ETag: %+v", msg)
+		}
+		etags[msg.URL] = msg.ETag
+	}
+	res, err := http.Get(s.server.URL + "/live/footer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if got := res.Header.Get("ETag"); got != etags["/live/footer"] {
+		t.Errorf("pushed ETag %q, fragment path ETag %q: a client could not tell them apart", etags["/live/footer"], got)
+	}
+
+	s.cpu.Store(2)
+	again := s.open(t, "f="+url.QueryEscape("/live/footer#"+etags["/live/footer"])+"&f="+url.QueryEscape("/live/cpu#"+etags["/live/cpu"]), nil)
+	msg := again.next()
+	if msg.URL != "/live/cpu" || msg.HTML != "<p>cpu 2</p>" {
+		t.Errorf("first message %+v, want only the cpu, which changed", msg)
+	}
+}
+
+// An invalidation that changed nothing a fragment shows sends nothing.
+func TestStream_UnchangedIsNotPushed(t *testing.T) {
+	s := newSite(t, live.New())
+	s.cpu.Store(5)
+	e := s.open(t, "f=/live/cpu", nil)
+	e.next()
+	_ = s.app.InvalidateTags(context.Background(), "system:cpu") // still 5
+	s.cpu.Store(6)
+	_ = s.app.InvalidateTags(context.Background(), "system:cpu")
+	if msg := e.next(); msg.HTML != "<p>cpu 6</p>" {
+		t.Errorf("pushed %+v, want the change and not the repeat", msg)
+	}
+}
+
+// MaxStreamAge ends a stream, so the browser reconnects with the cookies it holds
+// now.
+func TestStream_MaxStreamAge(t *testing.T) {
+	s := newSite(t, live.NewWith(live.Config{MaxStreamAge: live.Duration(200 * time.Millisecond), KeepAlive: live.Duration(50 * time.Millisecond)}))
+	e := s.open(t, "f=/live/footer", nil)
+	e.next()
+	done := make(chan struct{})
+	go func() {
+		for e.lines.Scan() {
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream outlived MaxStreamAge")
+	}
 }
