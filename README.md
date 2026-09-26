@@ -11,7 +11,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.19.0 or later.
+Requires collage v0.20.0 or later.
 
 ## Marking what to refresh
 
@@ -97,7 +97,10 @@ if problems := validate(rc); len(problems) > 0 {
 
 Any other failure — a 500, a refused forgery token — leaves the target as it was
 and marks it stale, rather than filling it with an error page. A redirect is
-followed as the browser would follow it.
+followed as the browser would follow it, in one request: the form sends
+`Collage-Fetch`, and collage answers with where the action redirects instead of
+the redirect, which `fetch` would otherwise follow and download before the
+navigation fetched the page again.
 
 ## Pushing
 
@@ -178,6 +181,10 @@ is noticed and its fragments dropped.
 Where there is no shared worker, each tab opens its own stream, and closes it while
 hidden; with one visible tab at a time, as on a phone, that is still one connection.
 
+In development, collage's own reload script also listens through a shared worker,
+so however many pages are open the browser holds two long-lived connections: one
+for reloading, one for this stream.
+
 HTTP/2 lifts the limit altogether — a hundred streams on one connection — but
 browsers speak it only over TLS, so not on `localhost` or behind a proxy that ends
 TLS before your server.
@@ -243,6 +250,13 @@ The protocol is collage's own — fragment paths, the `<template data-collage-ho
 channel, ETags — so htmx or a script of your own works against the same server.
 
 ## Changes
+
+### v0.2.1
+
+- A tab coming back from the back-forward cache receives pushes again; the worker
+  forgot it when it left.
+- A form whose action redirects navigates in one request, with collage v0.20.0's
+  `Collage-Fetch`.
 
 ### v0.2.0
 

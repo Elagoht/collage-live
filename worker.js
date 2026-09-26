@@ -114,7 +114,10 @@ self.onconnect = (event) => {
   const port = event.ports[0];
   tabs.set(port, { urls: new Set() });
   port.onmessage = ({ data }) => {
-    const tab = tabs.get(port);
+    let tab = tabs.get(port);
+    // A tab back from the back-forward cache said goodbye when it left, and
+    // watches again on the same port: it is a tab like any other.
+    if (!tab && data.type === "watch") tabs.set(port, (tab = { urls: new Set() }));
     if (!tab) return;
     switch (data.type) {
       case "watch": {

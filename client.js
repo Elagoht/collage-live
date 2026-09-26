@@ -344,10 +344,17 @@
     const data = new FormData(form, e.submitter);
     let action = form.action;
     const init = { method, credentials: "same-origin", headers: { Accept: "text/html" } };
+    // Collage-Fetch asks collage to answer a redirect with where it leads rather
+    // than the redirect itself, which fetch would follow, downloading the page
+    // only for the navigation to fetch it again. Same origin only: on another, a
+    // header of our own would cost a preflight the server may refuse.
+    if (new URL(action, location.href).origin === location.origin) init.headers["Collage-Fetch"] = "1";
     if (method === "GET") action += (action.includes("?") ? "&" : "?") + new URLSearchParams(data);
     else init.body = data;
     try {
       const res = await fetch(action, init);
+      const destination = res.status === 204 && res.headers.get("Collage-Location");
+      if (destination) return location.assign(destination);
       if (res.redirected) return location.assign(res.url);
       if (!res.ok && res.status !== 422) throw new Error(res.status);
       stateOf(target).html = undefined;
