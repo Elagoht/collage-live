@@ -90,8 +90,9 @@
       },
       "prefix": {
         "type": "string",
-        "description": "Prefix is where the client and the stream are served: the client at <prefix>client/client.js, the stream at <prefix>stream/. It begins and ends with a slash. Default \"/_live/\"."
+        "description": "Prefix is where the client and the stream are served: the client at \u003cprefix\u003eclient/client.js, the stream at \u003cprefix\u003estream/. It begins and ends with a slash. Default \"/_live/\"."
       }
-    }
+    },
+    "additionalProperties": false
   }
 }
