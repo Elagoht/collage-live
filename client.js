@@ -3,6 +3,8 @@
 //   data-collage-push           take updates from the stream the server pushes
 //   data-collage-swap="morph"   patch the existing DOM instead of replacing it
 // and submits forms marked data-collage-target="<selector>" in place.
+// collageLive.pause/resume hold an element still; collageLive.put puts in an
+// answer the page fetched itself.
 (() => {
   "use strict";
   const self = document.currentScript;
@@ -11,11 +13,11 @@
   const workerPath = self && self.dataset.collageWorker;
   const TIMEOUT = 10000, MAX_BACKOFF = 60000, FALLBACK = 5000, RETRY_STREAM = 60000;
 
-  // element → { etag, html, timer, failures, inflight }
+  // element → { etag, html, timer, failures, inflight, holds, pending }
   const state = new WeakMap();
   const stateOf = (el) => {
     let s = state.get(el);
-    if (!s) state.set(el, (s = { etag: "", html: null, timer: 0, failures: 0, inflight: null }));
+    if (!s) state.set(el, (s = { etag: "", html: null, timer: 0, failures: 0, inflight: null, holds: 0, pending: null }));
     return s;
   };
   const all = () => [...document.querySelectorAll("[data-collage-fragment]")];
@@ -98,11 +100,21 @@
 
   // swap puts html into el. etag is the ETag it came with — "" when it came from
   // somewhere that has none, a form's answer, which the next poll must not be
-  // told it already holds.
-  const swap = (el, html, head, etag) => {
+  // told it already holds. reset puts it in even when it is what was last put
+  // in: the page may have changed the DOM since, and the answer is what it
+  // should show now.
+  const swap = (el, html, head, etag, reset) => {
     const s = stateOf(el);
-    s.etag = etag || "";
     fresh(el);
+    // A held element keeps what it shows. Only the latest answer waits for it —
+    // a fragment is a state, not a log — and its ETag is not taken as what the
+    // element holds, so a poll meanwhile is answered in full, not 304.
+    if (s.holds) {
+      s.pending = { html, head, etag, reset: reset || !!(s.pending && s.pending.reset) };
+      return;
+    }
+    s.etag = etag || "";
+    if (reset) s.html = undefined;
     if (head) applyHead(head);
     if (html === s.html) return;
     const parsed = parse(html);
@@ -357,8 +369,7 @@
       if (destination) return location.assign(destination);
       if (res.redirected) return location.assign(res.url);
       if (!res.ok && res.status !== 422) throw new Error(res.status);
-      stateOf(target).html = undefined;
-      swap(target, await res.text(), null, "");
+      swap(target, await res.text(), null, "", true);
     } catch {
       markStale(target);
     }
@@ -385,11 +396,46 @@
     startPush();
   };
 
+  // The elements a call names: every element showing a URL, or the fragment
+  // element around the one given — the list a drag started from, say — or that
+  // element itself when it is in none.
+  const targets = (target) => {
+    if (typeof target === "string") return byURL(target);
+    if (!(target instanceof Element)) return [];
+    return [target.closest("[data-collage-fragment]") || target];
+  };
+
   window.collageLive = {
     // refresh fetches one element, or every element showing a URL, now.
     refresh(target) {
       const els = typeof target === "string" ? byURL(target) : [target];
       return Promise.all(els.map(fetchInto));
+    },
+    // pause holds an element still: polls, pushes and form answers keep arriving,
+    // but none is put in until resume. Calls nest; the element moves again when
+    // every pause has had its resume.
+    pause(target) {
+      for (const el of targets(target)) {
+        if (stateOf(el).holds++ === 0) el.setAttribute("data-collage-paused", "");
+      }
+    },
+    // resume ends one pause, and on the last puts in the latest answer that
+    // arrived meanwhile, if one did.
+    resume(target) {
+      for (const el of targets(target)) {
+        const s = stateOf(el);
+        if (!s.holds || --s.holds) continue;
+        el.removeAttribute("data-collage-paused");
+        const pending = s.pending;
+        s.pending = null;
+        if (pending) swap(el, pending.html, pending.head, pending.etag, pending.reset);
+      }
+    },
+    // put puts html into an element as a form's answer is put in: an answer the
+    // page fetched itself — an action's fragment — kept in step with what the
+    // client knows the element shows. A held element takes it on resume.
+    put(target, html) {
+      for (const el of targets(target)) swap(el, html, null, "", true);
     },
     // scan picks up elements added to the page since it loaded.
     scan() {

@@ -79,6 +79,49 @@ Style it:
 `window.collageLive.refresh(elementOrURL)` fetches now, and
 `window.collageLive.scan()` picks up elements added after the page loaded.
 
+### Holding an element still
+
+A drag, a menu held open, a selection being made: while the reader is in the
+middle of something, a refresh landing in the element would take it from under
+them. `pause` holds it still, and `resume` lets it move again:
+
+```js
+Sortable.create(list, {
+  group: "cards",
+  onStart: (e) => collageLive.pause(e.from),
+  onEnd: async (e) => {
+    try {
+      // moveForm: a FormData carrying the card, where it went, and {{csrfToken}}'s field.
+      const res = await fetch(moveURL, { method: "POST", body: moveForm(e), headers: { "Collage-Fetch": "1" } });
+      // An accepted move, or a refused one answered with the board as it stands.
+      if (res.ok || res.status === 422) collageLive.put(e.from, await res.text());
+    } finally {
+      collageLive.resume(e.from);
+    }
+  },
+});
+```
+
+| Call | |
+| --- | --- |
+| `pause(elementOrURL)` | Holds the element: polls, pushes and form answers keep arriving, but none is put in |
+| `resume(elementOrURL)` | Ends one pause; on the last, puts in the latest answer that arrived meanwhile |
+| `put(elementOrURL, html)` | Puts an answer the page fetched itself into the element, as a form's answer is put in |
+
+- An element inside a fragment names that fragment — the list a drag started from
+  names the board around it. A URL names every element showing it.
+- Pauses nest. Two parts of a page can hold one element, a drag and a dialog, and it
+  moves again when both have resumed. A `resume` with no pause does nothing.
+- Only the latest answer is kept: a fragment is a state, not a log. Its ETag is not
+  taken as what the element holds until it is put in, so a poll meanwhile is
+  answered in full rather than `304`.
+- A held element carries `data-collage-paused`. It is still marked stale when a
+  poll fails or the stream goes down.
+- `put` is for an answer the page fetched itself, an action's fragment. Patching
+  the element's DOM directly would leave the client believing it shows what it
+  last put in, and a push matching that would be skipped. `put` always goes in,
+  even when it matches, and a held element takes it on resume.
+
 ### Forms
 
 A form marked `data-collage-target` is submitted with `fetch`, and the answer goes
@@ -250,6 +293,13 @@ The protocol is collage's own — fragment paths, the `<template data-collage-ho
 channel, ETags — so htmx or a script of your own works against the same server.
 
 ## Changes
+
+### v0.3.0
+
+- `collageLive.pause` and `resume` hold an element still while the reader is in
+  the middle of something, such as a drag; the latest answer is put in on resume.
+- `collageLive.put` puts an answer the page fetched itself into an element, kept
+  in step with what the client knows the element shows.
 
 ### v0.2.2
 

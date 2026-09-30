@@ -129,7 +129,7 @@ func NewWith(cfg Config) *Plugin {
 }
 
 func (p *Plugin) Name() string    { return Name }
-func (p *Plugin) Version() string { return "0.2.3" }
+func (p *Plugin) Version() string { return "0.3.0" }
 
 // UseTransport has the client push over t instead of the event stream. It is for
 // the plugin serving t, and must be called before the application is built.
