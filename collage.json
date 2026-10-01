@@ -33,6 +33,11 @@
       "doc": "collage-live: `morph` patches the DOM in place, so a focused input keeps what is typed."
     },
     {
+      "name": "data-collage-transition",
+      "value": null,
+      "doc": "collage-live: put each answer in inside a view transition, unless the reader prefers reduced motion."
+    },
+    {
       "name": "data-collage-target",
       "value": "#${1:result}",
       "doc": "collage-live: on a form, submit with fetch and put the answer into this element."

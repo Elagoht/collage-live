@@ -44,6 +44,7 @@ name, and says how:
 | `data-collage-interval="2s"` | Fetch it on this interval (`500ms`, `2s`, `1m`) |
 | `data-collage-push` | Take it from the stream when the server pushes it |
 | `data-collage-swap="morph"` | Patch the DOM in place rather than replacing it, so a focused input keeps what is being typed |
+| `data-collage-transition` | Put each answer in inside a [view transition](#animating-a-swap) |
 | `data-collage-target="<selector>"` | On a form: submit with `fetch` and put the answer into the element |
 
 The page owns the container and the fragment owns what is inside it, so one fragment
@@ -74,7 +75,8 @@ Style it:
   to the document's head, once, by its key.
 - Drops `<script>` elements from the answer, so a script inside a fragment does not
   run again on every refresh.
-- Dispatches `collage:swap` and `collage:stale` events on the element.
+- Dispatches `collage:before-swap` just before the element changes, which a page
+  can take over, and `collage:swap` and `collage:stale` on the element.
 
 `window.collageLive.refresh(elementOrURL)` fetches now, and
 `window.collageLive.scan()` picks up elements added after the page loaded.
@@ -121,6 +123,57 @@ Sortable.create(list, {
   the element's DOM directly would leave the client believing it shows what it
   last put in, and a push matching that would be skipped. `put` always goes in,
   even when it matches, and a held element takes it on resume.
+
+### Animating a swap
+
+A view transition has to begin before the DOM changes: the browser captures the old
+state, runs the change, then captures the new one. `data-collage-transition` has the
+client put every answer in that way — pushes, polls, form answers and `put` alike:
+
+```html
+<div data-collage-fragment="{{fragmentURL "board" "columns"}}" data-collage-push data-collage-transition>
+  <!-- each card: style="view-transition-name: card-{{.ID}}" -->
+</div>
+```
+
+Cards that keep their `view-transition-name` from one answer to the next slide to
+their new places. Where the browser has no `document.startViewTransition`, or the
+reader asked for `prefers-reduced-motion: reduce`, the answer goes in at once.
+
+For more control, `collage:before-swap` fires on the element just before it
+changes. It bubbles, and it is cancelable: a listener that calls `preventDefault`
+takes the change over, and runs `detail.swap()` itself when it is ready — inside
+its own transition, naming the elements that should move on both sides of it:
+
+```js
+document.addEventListener("collage:before-swap", (e) => {
+  if (!e.target.matches("#board") || !document.startViewTransition) return;
+  e.preventDefault();
+  nameCards(e.target); // the old cards, before the old state is captured
+  document.startViewTransition(() => {
+    e.detail.swap();
+    nameCards(e.target); // the new cards, for the new state's capture
+  });
+});
+```
+
+Names written into the fragment's own markup, as above, are on both sides already
+and need neither call.
+
+- It fires only when the element is about to change: not for a poll or push
+  identical to what the element shows, not for the first copy when it is what the
+  page was served with, and not while the element is held — a held element's
+  answer fires it on resume. A form's answer and `put` always go in, so they
+  always fire it.
+- `detail.swap()` puts the answer in and dispatches `collage:swap`. Called after a
+  newer answer arrived, it does nothing, so a late call cannot put an older answer
+  on top of a newer one; a second call does nothing either. Called while the
+  element is held, the answer waits for the resume.
+- A listener that prevents the swap and never calls `detail.swap()` leaves the
+  element as it was. The client keeps believing it shows what it showed, ETag
+  included, so the next poll is answered in full and the answer is offered again.
+- With both, the event comes first: `data-collage-transition` applies only when
+  no listener took the swap over.
 
 ### Forms
 
@@ -293,6 +346,13 @@ The protocol is collage's own — fragment paths, the `<template data-collage-ho
 channel, ETags — so htmx or a script of your own works against the same server.
 
 ## Changes
+
+### v0.4.0
+
+- `collage:before-swap` fires just before an element changes; a listener that
+  prevents it runs `detail.swap()` itself, inside a view transition of its own.
+- `data-collage-transition` puts every answer in inside a view transition, unless
+  the browser has none or the reader prefers reduced motion.
 
 ### v0.3.0
 

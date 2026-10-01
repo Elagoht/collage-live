@@ -2,9 +2,11 @@
 //   data-collage-interval="2s"  poll the URL on that interval
 //   data-collage-push           take updates from the stream the server pushes
 //   data-collage-swap="morph"   patch the existing DOM instead of replacing it
+//   data-collage-transition     put each answer in inside a view transition
 // and submits forms marked data-collage-target="<selector>" in place.
 // collageLive.pause/resume hold an element still; collageLive.put puts in an
-// answer the page fetched itself.
+// answer the page fetched itself. collage:before-swap lets the page take a swap
+// over, to run it inside a transition of its own.
 (() => {
   "use strict";
   const self = document.currentScript;
@@ -13,11 +15,11 @@
   const workerPath = self && self.dataset.collageWorker;
   const TIMEOUT = 10000, MAX_BACKOFF = 60000, FALLBACK = 5000, RETRY_STREAM = 60000;
 
-  // element → { etag, html, timer, failures, inflight, holds, pending }
+  // element → { etag, html, timer, failures, inflight, holds, pending, seq, applied }
   const state = new WeakMap();
   const stateOf = (el) => {
     let s = state.get(el);
-    if (!s) state.set(el, (s = { etag: "", html: null, timer: 0, failures: 0, inflight: null, holds: 0, pending: null }));
+    if (!s) state.set(el, (s = { etag: "", html: null, timer: 0, failures: 0, inflight: null, holds: 0, pending: null, seq: 0, applied: 0 }));
     return s;
   };
   const all = () => [...document.querySelectorAll("[data-collage-fragment]")];
@@ -106,6 +108,9 @@
   const swap = (el, html, head, etag, reset) => {
     const s = stateOf(el);
     fresh(el);
+    // Every answer is newer than any swap still waiting on a listener, including
+    // one that turns out to change nothing or has to wait for a resume.
+    const seq = ++s.seq;
     // A held element keeps what it shows. Only the latest answer waits for it —
     // a fragment is a state, not a log — and its ETag is not taken as what the
     // element holds, so a poll meanwhile is answered in full, not 304.
@@ -113,10 +118,14 @@
       s.pending = { html, head, etag, reset: reset || !!(s.pending && s.pending.reset) };
       return;
     }
-    s.etag = etag || "";
     if (reset) s.html = undefined;
     if (head) applyHead(head);
-    if (html === s.html) return;
+    // The ETag is taken as what the element holds only once it holds it: here,
+    // where nothing changes, or when the swap below is put in.
+    if (html === s.html) {
+      s.etag = etag || "";
+      return;
+    }
     const parsed = parse(html);
     applyHead(parsed.head);
     // The first copy to arrive is usually what the page was served with. Put in
@@ -126,14 +135,38 @@
       probe.append(parsed.content.cloneNode(true));
       if (probe.innerHTML.trim() === el.innerHTML.trim()) {
         s.html = html;
+        s.etag = etag || "";
         return;
       }
     }
-    s.html = html;
-    if (el.dataset.collageSwap === "morph") morph(el, parsed.content);
-    else el.replaceChildren(parsed.content);
-    el.dispatchEvent(new CustomEvent("collage:swap", { bubbles: true }));
+    // The change itself, handed to the page first: a view transition has to
+    // begin before the DOM changes, so collage:before-swap lets a listener take
+    // it over — preventDefault, then detail.swap() inside its own transition.
+    // Called late, it may find a newer answer already in; it then does nothing,
+    // so an older answer cannot land on top. A second call does nothing either.
+    // Called after a pause, it waits for the resume like any other answer.
+    const apply = () => {
+      if (seq !== s.seq || s.applied === seq) return;
+      s.applied = seq;
+      if (s.holds) {
+        s.pending = { html, head: null, etag, reset };
+        return;
+      }
+      s.etag = etag || "";
+      s.html = html;
+      if (el.dataset.collageSwap === "morph") morph(el, parsed.content);
+      else el.replaceChildren(parsed.content);
+      el.dispatchEvent(new CustomEvent("collage:swap", { bubbles: true }));
+    };
+    const before = new CustomEvent("collage:before-swap", { bubbles: true, cancelable: true, detail: { swap: apply } });
+    if (!el.dispatchEvent(before)) return;
+    if (el.hasAttribute("data-collage-transition") && document.startViewTransition && !reducedMotion.matches) {
+      // A transition another one interrupts is skipped, and says so by rejecting;
+      // the swap inside it still runs.
+      document.startViewTransition(apply).ready.catch(() => {});
+    } else apply();
   };
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
   const markStale = (el) => {
     stateOf(el).failures++;
