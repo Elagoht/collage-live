@@ -44,16 +44,16 @@ func newSite(t *testing.T, plugin *live.Plugin) *site {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	cpu := collage.NewFragment("cpu", "cpu.html").WithDataHandler(func(context.Context, *collage.RenderContext) (any, []string, error) {
+	cpu := collage.NewFragment("cpu", "cpu.html").WithData(collage.DataHandler(func(context.Context, *collage.RenderContext) (int64, []string, error) {
 		return s.cpu.Load(), []string{"system:cpu"}, nil
-	}).Build()
-	hello := collage.NewFragment("hello", "hello.html").WithDataHandler(func(_ context.Context, rc *collage.RenderContext) (any, []string, error) {
+	})).Build()
+	hello := collage.NewFragment("hello", "hello.html").WithData(collage.DataHandler(func(_ context.Context, rc *collage.RenderContext) (string, []string, error) {
 		name := "stranger"
 		if c, err := rc.Request.Cookie("user"); err == nil {
 			name = c.Value
 		}
 		return fmt.Sprintf("%s %d", name, s.cpu.Load()), []string{"greeting"}, nil
-	}).Build()
+	})).Build()
 	footer := collage.NewFragment("footer", "footer.html").Build()
 	page := collage.NewFragment("page", "page.html").
 		WithSlotFragment("cpu", cpu).WithSlotFragment("hello", hello).WithSlotFragment("footer", footer).Build()

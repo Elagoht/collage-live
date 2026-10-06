@@ -11,7 +11,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.20.0 or later.
+Requires collage v0.49.0 or later.
 
 ## Marking what to refresh
 
@@ -222,10 +222,10 @@ func stats(rc *collage.RenderContext) (monitor.Stats, error) {
 }
 
 cpu := collage.NewFragment("cpu", "fragments/cpu.html").
-	WithDataHandler(func(ctx context.Context, rc *collage.RenderContext) (any, []string, error) {
+	WithData(collage.DataHandler(func(ctx context.Context, rc *collage.RenderContext) (float64, []string, error) {
 		s, err := stats(rc)
 		return s.CPU, []string{"system:cpu"}, err
-	}).
+	})).
 	Shared(). // the same for every reader: rendered once per change, not once per tab
 	Build()
 
@@ -346,6 +346,12 @@ The protocol is collage's own — fragment paths, the `<template data-collage-ho
 channel, ETags — so htmx or a script of your own works against the same server.
 
 ## Changes
+
+### v0.4.1
+
+- Built against collage v0.49.0, whose fragment data is a typed `collage.Data`:
+  the tests and the README's sample use `WithData(collage.DataHandler(fn))`.
+- Requires collage v0.49.0.
 
 ### v0.4.0
 
