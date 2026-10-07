@@ -11,7 +11,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.49.0 or later.
+Requires collage v0.50.0 or later.
 
 ## Marking what to refresh
 
@@ -183,8 +183,10 @@ failure is an action answering the form's fragment again, with the errors, and
 status 422:
 
 ```go
+var problemsKey = collage.NewKey[[]string]("problems") // read by the form's fragment
+
 if problems := validate(rc); len(problems) > 0 {
-	rc.Set("problems", problems)
+	problemsKey.Set(rc, problems)
 	result := collage.RenderFragment(formFragment)
 	result.Status = http.StatusUnprocessableEntity
 	return result, nil
@@ -216,8 +218,10 @@ length — is pushed by invalidating on a timer. Three things make it cheap:
 // One measurement, shared by every fragment that shows part of it. No tags: with
 // them, every fragment would depend on every tag, and a CPU tick would re-render
 // the disks too. The TTL keeps it fresh; each fragment answers to its own tag.
+var statsKey = collage.NewKey[monitor.Stats]("system:stats")
+
 func stats(rc *collage.RenderContext) (monitor.Stats, error) {
-	return collage.Cached(rc, "system:stats", time.Second, nil,
+	return collage.Cached(rc, statsKey, time.Second, nil,
 		func(ctx context.Context) (monitor.Stats, error) { return monitor.Collect(ctx) })
 }
 
@@ -346,6 +350,12 @@ The protocol is collage's own — fragment paths, the `<template data-collage-ho
 channel, ETags — so htmx or a script of your own works against the same server.
 
 ## Changes
+
+### v0.4.2
+
+- Built against collage v0.50.0: configuration is read with `collage.PluginConfig`,
+  and the README's samples share values through typed `collage.Key`s.
+- Requires collage v0.50.0.
 
 ### v0.4.1
 

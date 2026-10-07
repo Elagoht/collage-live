@@ -129,7 +129,7 @@ func NewWith(cfg Config) *Plugin {
 }
 
 func (p *Plugin) Name() string    { return Name }
-func (p *Plugin) Version() string { return "0.4.1" }
+func (p *Plugin) Version() string { return "0.4.2" }
 
 // UseTransport has the client push over t instead of the event stream. It is for
 // the plugin serving t, and must be called before the application is built.
@@ -142,9 +142,11 @@ func (p *Plugin) UseTransport(t Transport) {
 // In Configure rather than Init because a template function has to exist before
 // templates are parsed, and the function has to know the prefix.
 func (p *Plugin) Configure(_ context.Context, host collage.ConfigHost) error {
-	if err := host.Config(&p.cfg); err != nil {
+	cfg, err := collage.PluginConfig(host, p.cfg)
+	if err != nil {
 		return err
 	}
+	p.cfg = cfg
 	p.applyDefaults()
 	if !strings.HasPrefix(p.cfg.Prefix, "/") || !strings.HasSuffix(p.cfg.Prefix, "/") {
 		return fmt.Errorf("live: prefix %q must begin and end with a slash", p.cfg.Prefix)
@@ -173,9 +175,11 @@ func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 		// Registered with RegisterPlugin, which runs no Configure: the defaults,
 		// and the configuration, are read here instead. {{liveClient}} does not
 		// exist then; the layout links ClientPath itself.
-		if err := host.Config(&p.cfg); err != nil {
+		cfg, err := collage.PluginConfig(host, p.cfg)
+		if err != nil {
 			return err
 		}
+		p.cfg = cfg
 		p.applyDefaults()
 	}
 	client, err := fs.Sub(clientFS, ".")
