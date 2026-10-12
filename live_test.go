@@ -436,6 +436,26 @@ func TestStream_UnchangedIsNotPushed(t *testing.T) {
 	}
 }
 
+// TestStream_MaxStreamAgeShorterThanKeepAlive: the age ends the stream on time
+// even when the keep-alive wait is far longer; it used to be checked only between
+// keep-alive waits, so a stream outlived its age by up to keepAlive.
+func TestStream_MaxStreamAgeShorterThanKeepAlive(t *testing.T) {
+	s := newSite(t, live.New(live.Options{MaxStreamAge: collage.Duration(200 * time.Millisecond), KeepAlive: collage.Duration(time.Minute)}))
+	e := s.open(t, "f=/live/footer", nil)
+	e.next()
+	done := make(chan struct{})
+	go func() {
+		for e.lines.Scan() {
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream outlived MaxStreamAge while waiting a keep-alive")
+	}
+}
+
 // MaxStreamAge ends a stream, so the browser reconnects with the cookies it holds
 // now.
 func TestStream_MaxStreamAge(t *testing.T) {

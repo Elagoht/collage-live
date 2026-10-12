@@ -102,21 +102,23 @@ func (h *sseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	keepAlive := time.Duration(h.plugin.cfg.KeepAlive)
-	var expired <-chan time.Time
+	// The age bounds every wait, not only the gap between them, so a stream ends
+	// on time even when the next keep-alive is far off.
+	var ends time.Time
 	if age := time.Duration(h.plugin.cfg.MaxStreamAge); age > 0 {
-		timer := time.NewTimer(age)
-		defer timer.Stop()
-		expired = timer.C
+		ends = time.Now().Add(age)
 	}
 	for {
-		select {
-		case <-expired:
-			// Ended from here, the browser reconnects with the cookies it holds
-			// now; see Options.MaxStreamAge.
-			return
-		default:
-		}
 		wait, cancel := context.WithTimeout(r.Context(), keepAlive)
+		if !ends.IsZero() {
+			if time.Until(ends) <= 0 {
+				// Ended from here, the browser reconnects with the cookies it holds
+				// now; see Options.MaxStreamAge.
+				cancel()
+				return
+			}
+			wait, cancel = withDeadline(wait, cancel, ends)
+		}
 		msgs, err := sub.Wait(wait)
 		cancel()
 		switch {
@@ -125,6 +127,9 @@ func (h *sseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil:
+			if !ends.IsZero() && time.Until(ends) <= 0 {
+				return
+			}
 			if write(": keep-alive\n\n") != nil {
 				return
 			}
@@ -135,4 +140,10 @@ func (h *sseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// withDeadline narrows ctx to deadline, and returns a cancel that releases both.
+func withDeadline(ctx context.Context, cancel context.CancelFunc, deadline time.Time) (context.Context, context.CancelFunc) {
+	narrowed, cancelNarrowed := context.WithDeadline(ctx, deadline)
+	return narrowed, func() { cancelNarrowed(); cancel() }
 }

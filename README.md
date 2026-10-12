@@ -360,6 +360,11 @@ channel, ETags — so htmx or a script of your own works against the same server
 
 ## Changes
 
+### v0.5.1
+
+- `maxStreamAge` ends a stream on time. It was checked only between keep-alive
+  waits, so a stream could outlive it by up to `keepAlive`.
+
 ### v0.5.0
 
 - One constructor: `live.New(live.Options{…})`. `live.New()` and
