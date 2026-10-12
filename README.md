@@ -347,25 +347,30 @@ messages over a WebSocket. A transport of your own calls
 `Plugin.Subscribe(r, live.ParseWatches(r.URL.Query()["f"]))`, sets `Cookie()` on
 its response, sends `Initial()`, then loops on `Wait`, honours `MaxStreamAge()`,
 pings every `KeepAlive()`, serves under `Prefix()`, and tells the client where to
-connect with `UseTransport`. It reads the accessors and calls `UseTransport` in its
-**Init**, not its Configure: every plugin's Configure has run by then, so the
-values are final, and a transport listed before live still calls it before live's
-Init decides whether to serve the event stream. With `noStream` set, `Subscribe`
-refuses with `live.ErrNoStream`.
+connect with `UseTransport`. It reads the accessors in its **Init**, not its
+Configure: every plugin's Configure has run by then, so the values are final.
+`UseTransport` may be called from Configure, Init or both, and the last call wins:
+collage-websocket reserves the transport in Configure (`Transport{Kind: "ws"}`) and
+sets its `Path` in Init. Either way a transport listed before live calls it before
+live's Init decides whether to serve the event stream. With `noStream` set,
+`Subscribe` refuses with `live.ErrNoStream`.
 
 ## Without the client
 
 The protocol is collage's own — fragment paths, the `<template data-collage-hoist>`
 channel, ETags — so htmx or a script of your own works against the same server.
 
-## Changes
+## Changed in v0.5.2
 
-### v0.5.1
+- Documentation only: `UseTransport` may be called from a transport's Configure
+  as well as its Init; the last call wins.
+
+## Changed in v0.5.1
 
 - `maxStreamAge` ends a stream on time. It was checked only between keep-alive
   waits, so a stream could outlive it by up to `keepAlive`.
 
-### v0.5.0
+## Changed in v0.5.0
 
 - One constructor: `live.New(live.Options{…})`. `live.New()` and
   `live.NewWith(live.Config{…})` are gone, and `Config` is `Options`.
@@ -384,51 +389,51 @@ channel, ETags — so htmx or a script of your own works against the same server
 - A negative `maxFragments` is an error; it used to mean 32.
 - Requires collage v0.61.0.
 
-### v0.4.3
+## Changed in v0.4.3
 
 - Built against collage v0.60.0, whose public API is sealed; no behaviour changes.
 - Requires collage v0.60.0.
 
-### v0.4.2
+## Changed in v0.4.2
 
 - Built against collage v0.50.0: configuration is read with `collage.PluginConfig`,
   and the README's samples share values through typed `collage.Key`s.
 - Requires collage v0.50.0.
 
-### v0.4.1
+## Changed in v0.4.1
 
 - Built against collage v0.49.0, whose fragment data is a typed `collage.Data`:
   the tests and the README's sample use `WithData(collage.DataHandler(fn))`.
 - Requires collage v0.49.0.
 
-### v0.4.0
+## Changed in v0.4.0
 
 - `collage:before-swap` fires just before an element changes; a listener that
   prevents it runs `detail.swap()` itself, inside a view transition of its own.
 - `data-collage-transition` puts every answer in inside a view transition, unless
   the browser has none or the reader prefers reduced motion.
 
-### v0.3.0
+## Changed in v0.3.0
 
 - `collageLive.pause` and `resume` hold an element still while the reader is in
   the middle of something, such as a drag; the latest answer is put in on resume.
 - `collageLive.put` puts an answer the page fetched itself into an element, kept
   in step with what the client knows the element shows.
 
-### v0.2.2
+## Changed in v0.2.2
 
 - `collage.json`: the plugin described to editors — its template functions,
   snippets and configuration schema — for the Collage Snippets & Highlighter
   extension and any tool reading it.
 
-### v0.2.1
+## Changed in v0.2.1
 
 - A tab coming back from the back-forward cache receives pushes again; the worker
   forgot it when it left.
 - A form whose action redirects navigates in one request, with collage v0.20.0's
   `Collage-Fetch`.
 
-### v0.2.0
+## Changed in v0.2.0
 
 - One stream for every tab of the browser, through a shared worker. A stream per
   tab used up the browser's six connections to the origin.

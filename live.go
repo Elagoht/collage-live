@@ -117,13 +117,15 @@ func New(opts Options) *Plugin {
 }
 
 func (p *Plugin) Name() string    { return Name }
-func (p *Plugin) Version() string { return "0.5.1" }
+func (p *Plugin) Version() string { return "0.5.2" }
 
 // UseTransport has the client push over t instead of the event stream. It is for
-// the plugin serving t, which calls it from its own Init: every plugin's
-// Configure has run by then, so Prefix and KeepAlive are final, and a transport
-// plugin listed before live (as collage-websocket is) still calls it before
-// live's Init decides whether to serve the event stream. With NoStream set,
+// the plugin serving t, which calls it from its Configure or its Init, or both;
+// the last call wins. Calling it in Configure reserves the transport early (as
+// collage-websocket does with only Kind set); a Path built from Prefix belongs in
+// Init, where every plugin's Configure has run and Prefix and KeepAlive are
+// final. Either way it runs before live's Init decides whether to serve the event
+// stream, even for a transport plugin listed before live. With NoStream set,
 // nothing is pushed over it either: Subscribe refuses with ErrNoStream.
 func (p *Plugin) UseTransport(t Transport) {
 	p.transport = &t
