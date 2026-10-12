@@ -11,7 +11,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.50.0 or later.
+Requires collage v0.60.0 or later.
 
 ## Marking what to refresh
 
@@ -350,6 +350,11 @@ The protocol is collage's own — fragment paths, the `<template data-collage-ho
 channel, ETags — so htmx or a script of your own works against the same server.
 
 ## Changes
+
+### v0.4.3
+
+- Built against collage v0.60.0, whose public API is sealed; no behaviour changes.
+- Requires collage v0.60.0.
 
 ### v0.4.2
 
