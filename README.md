@@ -7,11 +7,11 @@ event stream.
 
 ```go
 app, err := collage.New(&collage.Config{
-	Plugins: []collage.Plugin{live.New()},
+	Plugins: []collage.Plugin{live.New(live.Options{})},
 })
 ```
 
-Requires collage v0.60.0 or later.
+Requires collage v0.61.0 or later.
 
 ## Marking what to refresh
 
@@ -332,9 +332,13 @@ or the stream arrives only when it ends.
 
 The client is served at `<prefix>client/client.js`, its worker at
 `<prefix>client/worker.js`, and the stream at `<prefix>stream/`. With `noStream`
+nothing is pushed — over the event stream or over another plugin's transport —
 the client only polls, and a `data-collage-push` element without an interval is
-polled every five seconds. `maxStreamAge` closes a connection after that long, for
-the client to reopen; zero never does.
+polled every five seconds. `keepAlive` and `maxStreamAge` are duration strings;
+`maxStreamAge` closes a connection after that long, for the client to reopen, and
+zero never does. A number where a duration goes, a negative duration and a
+negative `maxFragments` stop the application; `null` leaves the default. In Go,
+the same settings are `live.Options`.
 
 ## Other transports
 
@@ -342,7 +346,8 @@ the client to reopen; zero never does.
 messages over a WebSocket. A transport of your own calls
 `Plugin.Subscribe(r, live.ParseWatches(r.URL.Query()["f"]))`, sets `Cookie()` on
 its response, sends `Initial()`, then loops on `Wait`, honours `MaxStreamAge()`,
-and tells the client where to connect with `UseTransport`.
+pings every `KeepAlive()`, serves under `Prefix()`, and tells the client where to
+connect with `UseTransport`, before the application starts.
 
 ## Without the client
 
@@ -350,6 +355,20 @@ The protocol is collage's own — fragment paths, the `<template data-collage-ho
 channel, ETags — so htmx or a script of your own works against the same server.
 
 ## Changes
+
+### v0.5.0
+
+- One constructor: `live.New(live.Options{…})`. `live.New()` and
+  `live.NewWith(live.Config{…})` are gone, and `Config` is `Options`.
+- `live.Duration` is gone: `keepAlive` and `maxStreamAge` are `collage.Duration`.
+  `null` now leaves the default instead of failing; a number fails naming the key.
+- `DefaultPrefix` is unexported; the default, `/_live/`, is documented on `prefix`
+  and returned by the new `Plugin.Prefix()`.
+- New `Plugin.KeepAlive()` and `Plugin.Prefix()`, for a transport of another plugin
+  to read the push settings instead of repeating them.
+- `noStream` now wins over a transport set with `UseTransport`: the client polls.
+- A negative `maxFragments` is an error; it used to mean 32.
+- Requires collage v0.61.0.
 
 ### v0.4.3
 

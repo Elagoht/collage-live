@@ -8,4 +8,4 @@ module github.com/Elagoht/collage-live
 
 go 1.26
 
-require github.com/Elagoht/collage v0.60.0
+require github.com/Elagoht/collage v0.61.0

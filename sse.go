@@ -112,7 +112,7 @@ func (h *sseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-expired:
 			// Ended from here, the browser reconnects with the cookies it holds
-			// now; see Config.MaxStreamAge.
+			// now; see Options.MaxStreamAge.
 			return
 		default:
 		}

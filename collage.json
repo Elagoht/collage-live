@@ -69,7 +69,7 @@
     "properties": {
       "keepAlive": {
         "type": "string",
-        "description": "KeepAlive is how often an idle stream sends a comment, so a proxy that closes quiet connections leaves it open. Default 25s.",
+        "description": "KeepAlive is how often an idle push connection sends something, so a proxy that closes quiet connections leaves it open: \"25s\", the default.",
         "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$",
         "examples": [
           "30s",
@@ -78,7 +78,7 @@
       },
       "maxFragments": {
         "type": "integer",
-        "description": "MaxFragments caps how many fragments one stream may watch. Default 32."
+        "description": "MaxFragments caps how many fragments one stream may watch. Default 32; negative is an error."
       },
       "maxStreamAge": {
         "type": "string",
@@ -91,7 +91,7 @@
       },
       "noStream": {
         "type": "boolean",
-        "description": "NoStream turns the event stream off. The client then only polls: an element marked data-collage-push without an interval is polled every five seconds."
+        "description": "NoStream turns pushing off: the event stream, and a transport another plugin serves through UseTransport. The client then only polls: an element marked data-collage-push without an interval is polled every five seconds."
       },
       "prefix": {
         "type": "string",

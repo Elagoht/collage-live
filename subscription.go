@@ -70,7 +70,7 @@ var ErrNoFragments = errors.New("live: no fragment to watch")
 //
 // It renders with the request it was made from, cookies included, for as long as
 // it lives. A reader who signs out in another tab keeps receiving what the old
-// cookie reads until the stream reconnects; Config.MaxStreamAge bounds that.
+// cookie reads until the stream reconnects; Options.MaxStreamAge bounds that.
 type Subscription struct {
 	hub     *hub
 	request *http.Request

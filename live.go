@@ -4,7 +4,7 @@
 // over an event stream.
 //
 //	app, err := collage.New(&collage.Config{
-//		Plugins: []collage.Plugin{live.New()},
+//		Plugins: []collage.Plugin{live.New(live.Options{})},
 //	})
 //
 // The layout includes the client, and the page marks what to refresh — the
@@ -56,51 +56,42 @@ import (
 // Name is the plugin's name, and the key its configuration is found under.
 const Name = "elagoht/live"
 
-// DefaultPrefix is where the plugin serves its client and its stream.
-const DefaultPrefix = "/_live/"
+// defaultPrefix is where the plugin serves its client and its stream.
+const defaultPrefix = "/_live/"
+
+// defaultKeepAlive is how often an idle push connection sends something.
+const defaultKeepAlive = 25 * time.Second
 
 //go:embed client.js worker.js
 var clientFS embed.FS
 
-// Config is the plugin's configuration.
-type Config struct {
+// Options configures the plugin.
+type Options struct {
 	// Prefix is where the client and the stream are served: the client at
 	// <prefix>client/client.js, the stream at <prefix>stream/. It begins and ends
 	// with a slash. Default "/_live/".
 	Prefix string `json:"prefix"`
-	// NoStream turns the event stream off. The client then only polls: an element
+	// NoStream turns pushing off: the event stream, and a transport another
+	// plugin serves through UseTransport. The client then only polls: an element
 	// marked data-collage-push without an interval is polled every five seconds.
 	NoStream bool `json:"noStream"`
-	// KeepAlive is how often an idle stream sends a comment, so a proxy that
-	// closes quiet connections leaves it open. Default 25s.
-	KeepAlive Duration `json:"keepAlive"`
-	// MaxFragments caps how many fragments one stream may watch. Default 32.
+	// KeepAlive is how often an idle push connection sends something, so a proxy
+	// that closes quiet connections leaves it open: "25s", the default.
+	KeepAlive collage.Duration `json:"keepAlive"`
+	// MaxFragments caps how many fragments one stream may watch. Default 32;
+	// negative is an error.
 	MaxFragments int `json:"maxFragments"`
 	// MaxStreamAge closes a stream after it has been open this long, and the
 	// client reconnects at once. A stream renders with the cookies it was opened
 	// with, so a reader who signed out elsewhere keeps receiving what the old
 	// cookie reads until it reconnects; this bounds how long. Nothing is lost —
 	// the reconnect sends what changed. Zero, the default, never closes one.
-	MaxStreamAge Duration `json:"maxStreamAge"`
-}
-
-// Duration is a time.Duration that reads from JSON as a string: "25s", "1m".
-type Duration time.Duration
-
-// UnmarshalJSON reads a duration written the way time.ParseDuration reads it.
-func (d *Duration) UnmarshalJSON(b []byte) error {
-	s := strings.Trim(string(b), `"`)
-	parsed, err := time.ParseDuration(s)
-	if err != nil {
-		return fmt.Errorf("live: duration %s: %w", b, err)
-	}
-	*d = Duration(parsed)
-	return nil
+	MaxStreamAge collage.Duration `json:"maxStreamAge"`
 }
 
 // Plugin serves the client, the stream, and hears invalidations.
 type Plugin struct {
-	cfg  Config
+	cfg  Options
 	host collage.Host
 	log  *slog.Logger
 	hub  *hub
@@ -119,20 +110,19 @@ type Transport struct {
 	Path string
 }
 
-// New returns a plugin configured entirely from the application.
-func New() *Plugin { return NewWith(Config{}) }
-
-// NewWith returns a plugin with cfg as its starting point, which the application's
+// New returns a plugin with opts as its starting point, which the application's
 // own configuration is then decoded over.
-func NewWith(cfg Config) *Plugin {
-	return &Plugin{cfg: cfg, hub: newHub()}
+func New(opts Options) *Plugin {
+	return &Plugin{cfg: opts, hub: newHub()}
 }
 
 func (p *Plugin) Name() string    { return Name }
-func (p *Plugin) Version() string { return "0.4.3" }
+func (p *Plugin) Version() string { return "0.5.0" }
 
 // UseTransport has the client push over t instead of the event stream. It is for
-// the plugin serving t, and must be called before the application is built.
+// the plugin serving t, and must be called before the application starts — from
+// that plugin's Configure, say. With NoStream set, nothing is pushed over it
+// either.
 func (p *Plugin) UseTransport(t Transport) {
 	p.transport = &t
 }
@@ -147,23 +137,32 @@ func (p *Plugin) Configure(_ context.Context, host collage.ConfigHost) error {
 		return err
 	}
 	p.cfg = cfg
-	p.applyDefaults()
+	if err := p.applyDefaults(); err != nil {
+		return err
+	}
 	if !strings.HasPrefix(p.cfg.Prefix, "/") || !strings.HasSuffix(p.cfg.Prefix, "/") {
 		return fmt.Errorf("live: prefix %q must begin and end with a slash", p.cfg.Prefix)
 	}
 	return host.AddTemplateFunc("liveClient", p.clientTag)
 }
 
-func (p *Plugin) applyDefaults() {
+func (p *Plugin) applyDefaults() error {
+	if p.cfg.KeepAlive < 0 || p.cfg.MaxStreamAge < 0 {
+		return errors.New("live: keepAlive and maxStreamAge must not be negative")
+	}
+	if p.cfg.MaxFragments < 0 {
+		return fmt.Errorf("live: maxFragments %d is negative", p.cfg.MaxFragments)
+	}
 	if p.cfg.Prefix == "" {
-		p.cfg.Prefix = DefaultPrefix
+		p.cfg.Prefix = defaultPrefix
 	}
-	if p.cfg.KeepAlive <= 0 {
-		p.cfg.KeepAlive = Duration(25 * time.Second)
+	if p.cfg.KeepAlive == 0 {
+		p.cfg.KeepAlive = collage.Duration(defaultKeepAlive)
 	}
-	if p.cfg.MaxFragments <= 0 {
+	if p.cfg.MaxFragments == 0 {
 		p.cfg.MaxFragments = 32
 	}
+	return nil
 }
 
 // Init serves the client and, unless it is off or another transport replaces it,
@@ -180,7 +179,9 @@ func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 			return err
 		}
 		p.cfg = cfg
-		p.applyDefaults()
+		if err := p.applyDefaults(); err != nil {
+			return err
+		}
 	}
 	client, err := fs.Sub(clientFS, ".")
 	if err != nil {
@@ -223,8 +224,23 @@ func (p *Plugin) OnCacheInvalidate(_ context.Context, ev *collage.CacheInvalidat
 
 // MaxStreamAge is how long a push connection may stay open before it is closed
 // for the client to reconnect; zero is forever. A transport of another plugin
-// honours it as the event stream does. See Config.MaxStreamAge.
+// honours it as the event stream does. See Options.MaxStreamAge.
 func (p *Plugin) MaxStreamAge() time.Duration { return time.Duration(p.cfg.MaxStreamAge) }
+
+// KeepAlive is how often an idle push connection sends something, so a proxy
+// that closes quiet connections leaves it open. A transport of another plugin
+// pings at this interval as the event stream does. See Options.KeepAlive.
+func (p *Plugin) KeepAlive() time.Duration {
+	if p.cfg.KeepAlive <= 0 {
+		return defaultKeepAlive
+	}
+	return time.Duration(p.cfg.KeepAlive)
+}
+
+// Prefix is where the plugin serves its client and its stream, beginning and
+// ending with a slash: "/_live/" by default. A transport of another plugin serves
+// its connection under it. See Options.Prefix.
+func (p *Plugin) Prefix() string { return p.prefix() }
 
 // ClientPath is the URL the client script is served at.
 func (p *Plugin) ClientPath() string { return p.clientPrefix() + "client.js" }
@@ -234,7 +250,7 @@ func (p *Plugin) StreamPath() string { return p.prefix() + "stream/" }
 
 func (p *Plugin) prefix() string {
 	if p.cfg.Prefix == "" {
-		return DefaultPrefix
+		return defaultPrefix
 	}
 	return p.cfg.Prefix
 }
@@ -251,13 +267,15 @@ func (p *Plugin) clientTag() template.HTML {
 	b.WriteString(template.HTMLEscapeString(p.clientPrefix() + "worker.js"))
 	b.WriteString(`"`)
 	switch {
+	case p.cfg.NoStream:
+		// Pushing is off, over any transport: the client polls.
 	case p.transport != nil:
 		b.WriteString(` data-collage-stream="`)
 		b.WriteString(template.HTMLEscapeString(p.transport.Path))
 		b.WriteString(`" data-collage-transport="`)
 		b.WriteString(template.HTMLEscapeString(p.transport.Kind))
 		b.WriteString(`"`)
-	case !p.cfg.NoStream:
+	default:
 		b.WriteString(` data-collage-stream="`)
 		b.WriteString(template.HTMLEscapeString(p.StreamPath()))
 		b.WriteString(`" data-collage-transport="sse"`)

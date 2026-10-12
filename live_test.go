@@ -12,11 +12,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	live "github.com/Elagoht/collage-live"
 	"github.com/Elagoht/collage/pkg/collage"
+	"github.com/Elagoht/collage/pkg/collagetest"
 )
 
 // site is a page with a CPU panel pushed on the "system:cpu" tag, a greeting that
@@ -28,22 +28,9 @@ type site struct {
 	server *httptest.Server
 }
 
-func newSite(t *testing.T, plugin *live.Plugin) *site {
+func newSite(t *testing.T, plugin *live.Plugin, extra ...collagetest.SiteOption) *site {
 	t.Helper()
 	s := &site{plugin: plugin}
-	app, err := collage.New(&collage.Config{
-		Server: collage.ServerConfig{Host: "localhost", Port: 3000},
-		Template: collage.TemplateConfig{FS: fstest.MapFS{
-			"t/page.html":   {Data: []byte(`<html><head>{{liveClient}}</head><body>{{slot "cpu"}}{{slot "hello"}}{{slot "footer"}}</body></html>`)},
-			"t/cpu.html":    {Data: []byte(`<p>cpu {{.}}</p>`)},
-			"t/hello.html":  {Data: []byte(`<p>hello {{.}}</p>`)},
-			"t/footer.html": {Data: []byte(`<p>footer</p>`)},
-		}, Root: "t"},
-		Plugins: []collage.Plugin{plugin},
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
 	cpu := collage.NewFragment("cpu", "cpu.html").WithData(collage.LoadTagged(func(context.Context, *collage.RenderContext) (int64, []string, error) {
 		return s.cpu.Load(), []string{"system:cpu"}, nil
 	})).Build()
@@ -57,12 +44,20 @@ func newSite(t *testing.T, plugin *live.Plugin) *site {
 	footer := collage.NewFragment("footer", "footer.html").Build()
 	page := collage.NewFragment("page", "page.html").
 		WithSlotFragment("cpu", cpu).WithSlotFragment("hello", hello).WithSlotFragment("footer", footer).Build()
-	if err := app.RegisterPage(collage.NewPage("home").WithContent(page).WithPath("en", "/").
-		WithFragmentPath("en", "/live/cpu", cpu).
-		WithFragmentPath("en", "/live/hello", hello).
-		WithFragmentPath("en", "/live/footer", footer).Build()); err != nil {
-		t.Fatal(err)
-	}
+	app := collagetest.NewSite(t, append([]collagetest.SiteOption{
+		collagetest.WithoutHome(),
+		collagetest.WithTemplates(map[string]string{
+			"page.html":   `<html><head>{{liveClient}}</head><body>{{slot "cpu"}}{{slot "hello"}}{{slot "footer"}}</body></html>`,
+			"cpu.html":    `<p>cpu {{.}}</p>`,
+			"hello.html":  `<p>hello {{.}}</p>`,
+			"footer.html": `<p>footer</p>`,
+		}),
+		collagetest.WithRegister(collage.NewPage("home").WithContent(page).WithPath("en", "/").
+			WithFragmentPath("en", "/live/cpu", cpu).
+			WithFragmentPath("en", "/live/hello", hello).
+			WithFragmentPath("en", "/live/footer", footer).Build()),
+		collagetest.WithPlugins(plugin),
+	}, extra...)...).App
 	s.app = app
 	s.server = httptest.NewServer(app.Handler())
 	t.Cleanup(s.server.Close)
@@ -124,7 +119,7 @@ func (e *events) next() live.Message {
 }
 
 func TestClientTagAndScript(t *testing.T) {
-	s := newSite(t, live.New())
+	s := newSite(t, live.New(live.Options{}))
 	res, err := http.Get(s.server.URL + "/")
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +147,7 @@ func TestClientTagAndScript(t *testing.T) {
 }
 
 func TestNoStream(t *testing.T) {
-	s := newSite(t, live.NewWith(live.Config{NoStream: true}))
+	s := newSite(t, live.New(live.Options{NoStream: true}))
 	res, err := http.Get(s.server.URL + "/")
 	if err != nil {
 		t.Fatal(err)
@@ -165,10 +160,57 @@ func TestNoStream(t *testing.T) {
 	}
 }
 
+// A null duration in configuration leaves the default, as an absent one does.
+func TestNullDurationLeavesTheDefault(t *testing.T) {
+	plugin := live.New(live.Options{})
+	newSite(t, plugin, collagetest.WithPluginConfig(live.Name, `{"keepAlive":null,"maxStreamAge":null}`))
+	if plugin.KeepAlive() != 25*time.Second || plugin.MaxStreamAge() != 0 {
+		t.Errorf("KeepAlive %v, MaxStreamAge %v: want the defaults", plugin.KeepAlive(), plugin.MaxStreamAge())
+	}
+}
+
+// The push settings a transport of another plugin reads: the configured values,
+// and the defaults before configuration.
+func TestAccessors(t *testing.T) {
+	plugin := live.New(live.Options{})
+	if plugin.KeepAlive() != 25*time.Second || plugin.Prefix() != "/_live/" {
+		t.Errorf("before configuration: KeepAlive %v, Prefix %q", plugin.KeepAlive(), plugin.Prefix())
+	}
+	newSite(t, plugin, collagetest.WithPluginConfig(live.Name, `{"keepAlive":"5s","prefix":"/push/","maxStreamAge":"1h"}`))
+	if plugin.KeepAlive() != 5*time.Second || plugin.Prefix() != "/push/" || plugin.MaxStreamAge() != time.Hour {
+		t.Errorf("KeepAlive %v, Prefix %q, MaxStreamAge %v", plugin.KeepAlive(), plugin.Prefix(), plugin.MaxStreamAge())
+	}
+}
+
+// A negative number, or a duration written as a number, stops the application.
+func TestRefusals(t *testing.T) {
+	for _, config := range []string{`{"maxFragments":-1}`, `{"keepAlive":25}`, `{"maxStreamAge":"-1s"}`, `{"prefix":"live"}`} {
+		if _, err := collagetest.TrySite(t, collagetest.WithPlugins(live.New(live.Options{})),
+			collagetest.WithPluginConfig(live.Name, config)); err == nil {
+			t.Errorf("%s: the application started", config)
+		}
+	}
+}
+
+// noStream turns push off even when another plugin's transport is in use: the
+// client only polls, and names no push connection.
+func TestNoStreamWinsOverATransport(t *testing.T) {
+	plugin := live.New(live.Options{})
+	plugin.UseTransport(live.Transport{Kind: "ws", Path: "/_live/ws/"})
+	s := newSite(t, plugin, collagetest.WithPluginConfig(live.Name, `{"noStream":true}`))
+	res, err := http.Get(s.server.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := readAll(t, res); strings.Contains(body, "data-collage-stream") || strings.Contains(body, "data-collage-transport") {
+		t.Errorf("noStream with a transport still names a push connection:\n%s", body)
+	}
+}
+
 // The stream sends each fragment as it stands, then pushes it again when a tag it
 // depends on is invalidated — and only then.
 func TestStream_PushesOnInvalidation(t *testing.T) {
-	s := newSite(t, live.New())
+	s := newSite(t, live.New(live.Options{}))
 	s.cpu.Store(10)
 	e := s.open(t, "f=/live/cpu&f=/live/footer", nil)
 	if ct := e.res.Header.Get("Content-Type"); ct != "text/event-stream" {
@@ -207,7 +249,7 @@ func TestStream_PushesOnInvalidation(t *testing.T) {
 // A fragment that reads the reader's cookie is rendered for each reader. Sending
 // one reader's render to another is the failure this plugin must never have.
 func TestStream_PersonalFragmentsStayPersonal(t *testing.T) {
-	s := newSite(t, live.New())
+	s := newSite(t, live.New(live.Options{}))
 	ada := s.open(t, "f=/live/hello", &http.Cookie{Name: "user", Value: "ada"})
 	bo := s.open(t, "f=/live/hello", &http.Cookie{Name: "user", Value: "bo"})
 	if got := ada.next().HTML; got != "<p>hello ada 0</p>" {
@@ -228,7 +270,7 @@ func TestStream_PersonalFragmentsStayPersonal(t *testing.T) {
 
 // Nothing is reachable over the stream that is not reachable over HTTP.
 func TestStream_RefusesWhatIsNotAFragmentPath(t *testing.T) {
-	s := newSite(t, live.New())
+	s := newSite(t, live.New(live.Options{}))
 	for _, query := range []string{"f=/", "f=/nope", "", "f=https://example.com/live/cpu"} {
 		res, err := http.Get(s.server.URL + "/_live/stream/?" + query)
 		if err != nil {
@@ -239,7 +281,7 @@ func TestStream_RefusesWhatIsNotAFragmentPath(t *testing.T) {
 			t.Errorf("?%s = %d, want 400", query, res.StatusCode)
 		}
 	}
-	s2 := newSite(t, live.NewWith(live.Config{MaxFragments: 1}))
+	s2 := newSite(t, live.New(live.Options{MaxFragments: 1}))
 	res, _ := http.Get(s2.server.URL + "/_live/stream/?f=/live/cpu&f=/live/footer")
 	if res.StatusCode != http.StatusBadRequest {
 		t.Errorf("more than MaxFragments = %d, want 400", res.StatusCode)
@@ -248,7 +290,7 @@ func TestStream_RefusesWhatIsNotAFragmentPath(t *testing.T) {
 
 // Shutting down ends every stream first, so the server is not kept waiting.
 func TestCloseStreams(t *testing.T) {
-	plugin := live.New()
+	plugin := live.New(live.Options{})
 	s := newSite(t, plugin)
 	e := s.open(t, "f=/live/footer", nil)
 	e.next()
@@ -272,7 +314,7 @@ func TestCloseStreams(t *testing.T) {
 
 // Wait hands back one message per fragment however often it changed meanwhile.
 func TestSubscription_Coalesces(t *testing.T) {
-	plugin := live.New()
+	plugin := live.New(live.Options{})
 	s := newSite(t, plugin)
 	sub, err := plugin.Subscribe(httptest.NewRequest(http.MethodGet, "/", nil), live.ParseWatches([]string{"/live/cpu", "/live/cpu"}))
 	if err != nil {
@@ -321,7 +363,7 @@ func readAll(t *testing.T, res *http.Response) string {
 // A watch carrying the ETag of what the client shows is not sent again when the
 // stream opens; one whose copy is out of date is.
 func TestStream_SkipsWhatTheClientHolds(t *testing.T) {
-	s := newSite(t, live.New())
+	s := newSite(t, live.New(live.Options{}))
 	s.cpu.Store(1)
 	e := s.open(t, "f=/live/cpu&f=/live/footer", nil)
 	etags := map[string]string{}
@@ -351,7 +393,7 @@ func TestStream_SkipsWhatTheClientHolds(t *testing.T) {
 
 // An invalidation that changed nothing a fragment shows sends nothing.
 func TestStream_UnchangedIsNotPushed(t *testing.T) {
-	s := newSite(t, live.New())
+	s := newSite(t, live.New(live.Options{}))
 	s.cpu.Store(5)
 	e := s.open(t, "f=/live/cpu", nil)
 	e.next()
@@ -366,7 +408,7 @@ func TestStream_UnchangedIsNotPushed(t *testing.T) {
 // MaxStreamAge ends a stream, so the browser reconnects with the cookies it holds
 // now.
 func TestStream_MaxStreamAge(t *testing.T) {
-	s := newSite(t, live.NewWith(live.Config{MaxStreamAge: live.Duration(200 * time.Millisecond), KeepAlive: live.Duration(50 * time.Millisecond)}))
+	s := newSite(t, live.New(live.Options{MaxStreamAge: collage.Duration(200 * time.Millisecond), KeepAlive: collage.Duration(50 * time.Millisecond)}))
 	e := s.open(t, "f=/live/footer", nil)
 	e.next()
 	done := make(chan struct{})
