@@ -11,7 +11,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.61.0 or later.
+Requires collage v0.61.4 or later.
 
 ## Marking what to refresh
 
@@ -364,6 +364,7 @@ channel, ETags — so htmx or a script of your own works against the same server
 
 - Documentation only: `UseTransport` may be called from a transport's Configure
   as well as its Init; the last call wins.
+- Requires collage v0.61.4.
 
 ## Changed in v0.5.1
 
