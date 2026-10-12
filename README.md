@@ -347,7 +347,11 @@ messages over a WebSocket. A transport of your own calls
 `Plugin.Subscribe(r, live.ParseWatches(r.URL.Query()["f"]))`, sets `Cookie()` on
 its response, sends `Initial()`, then loops on `Wait`, honours `MaxStreamAge()`,
 pings every `KeepAlive()`, serves under `Prefix()`, and tells the client where to
-connect with `UseTransport`, before the application starts.
+connect with `UseTransport`. It reads the accessors and calls `UseTransport` in its
+**Init**, not its Configure: every plugin's Configure has run by then, so the
+values are final, and a transport listed before live still calls it before live's
+Init decides whether to serve the event stream. With `noStream` set, `Subscribe`
+refuses with `live.ErrNoStream`.
 
 ## Without the client
 
@@ -366,7 +370,12 @@ channel, ETags — so htmx or a script of your own works against the same server
   and returned by the new `Plugin.Prefix()`.
 - New `Plugin.KeepAlive()` and `Plugin.Prefix()`, for a transport of another plugin
   to read the push settings instead of repeating them.
-- `noStream` now wins over a transport set with `UseTransport`: the client polls.
+- `noStream` now wins over a transport set with `UseTransport`: the client polls,
+  and `Subscribe` refuses with the new `live.ErrNoStream`, so a transport's
+  endpoint cannot keep pushing.
+- A transport reads `KeepAlive()`/`Prefix()` and calls `UseTransport` from its
+  Init, once every Configure has run.
+- A negative `KeepAlive` or `MaxStreamAge` set from Go is an Init error.
 - A negative `maxFragments` is an error; it used to mean 32.
 - Requires collage v0.61.0.
 

@@ -120,9 +120,11 @@ func (p *Plugin) Name() string    { return Name }
 func (p *Plugin) Version() string { return "0.5.0" }
 
 // UseTransport has the client push over t instead of the event stream. It is for
-// the plugin serving t, and must be called before the application starts — from
-// that plugin's Configure, say. With NoStream set, nothing is pushed over it
-// either.
+// the plugin serving t, which calls it from its own Init: every plugin's
+// Configure has run by then, so Prefix and KeepAlive are final, and a transport
+// plugin listed before live (as collage-websocket is) still calls it before
+// live's Init decides whether to serve the event stream. With NoStream set,
+// nothing is pushed over it either: Subscribe refuses with ErrNoStream.
 func (p *Plugin) UseTransport(t Transport) {
 	p.transport = &t
 }
@@ -170,19 +172,6 @@ func (p *Plugin) applyDefaults() error {
 func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 	p.host = host
 	p.log = host.Logger()
-	if p.cfg.Prefix == "" {
-		// Registered with RegisterPlugin, which runs no Configure: the defaults,
-		// and the configuration, are read here instead. {{liveClient}} does not
-		// exist then; the layout links ClientPath itself.
-		cfg, err := collage.PluginConfig(host, p.cfg)
-		if err != nil {
-			return err
-		}
-		p.cfg = cfg
-		if err := p.applyDefaults(); err != nil {
-			return err
-		}
-	}
 	client, err := fs.Sub(clientFS, ".")
 	if err != nil {
 		return err
@@ -224,12 +213,15 @@ func (p *Plugin) OnCacheInvalidate(_ context.Context, ev *collage.CacheInvalidat
 
 // MaxStreamAge is how long a push connection may stay open before it is closed
 // for the client to reconnect; zero is forever. A transport of another plugin
-// honours it as the event stream does. See Options.MaxStreamAge.
+// honours it as the event stream does. See Options.MaxStreamAge. Like KeepAlive
+// and Prefix, it is final once live's Configure has run: read it from Init.
 func (p *Plugin) MaxStreamAge() time.Duration { return time.Duration(p.cfg.MaxStreamAge) }
 
 // KeepAlive is how often an idle push connection sends something, so a proxy
 // that closes quiet connections leaves it open. A transport of another plugin
-// pings at this interval as the event stream does. See Options.KeepAlive.
+// pings at this interval as the event stream does. See Options.KeepAlive. It is
+// final once live's Configure has run, so a transport reads it from its Init,
+// not its Configure; before that it is the configured-in-Go value or the default.
 func (p *Plugin) KeepAlive() time.Duration {
 	if p.cfg.KeepAlive <= 0 {
 		return defaultKeepAlive
@@ -239,7 +231,8 @@ func (p *Plugin) KeepAlive() time.Duration {
 
 // Prefix is where the plugin serves its client and its stream, beginning and
 // ending with a slash: "/_live/" by default. A transport of another plugin serves
-// its connection under it. See Options.Prefix.
+// its connection under it. See Options.Prefix. It is final once live's Configure
+// has run, so a transport reads it from its Init, not its Configure.
 func (p *Plugin) Prefix() string { return p.prefix() }
 
 // ClientPath is the URL the client script is served at.

@@ -169,16 +169,47 @@ func TestNullDurationLeavesTheDefault(t *testing.T) {
 	}
 }
 
-// The push settings a transport of another plugin reads: the configured values,
-// and the defaults before configuration.
+// reader is a plugin listed before live, as a transport is, that reads live's
+// push settings in its own Init.
+type reader struct {
+	lv              *live.Plugin
+	prefix          string
+	keepAlive, aged time.Duration
+}
+
+func (*reader) Name() string                   { return "test/reader" }
+func (*reader) Version() string                { return "0" }
+func (*reader) Shutdown(context.Context) error { return nil }
+func (r *reader) Init(context.Context, collage.Host) error {
+	r.prefix, r.keepAlive, r.aged = r.lv.Prefix(), r.lv.KeepAlive(), r.lv.MaxStreamAge()
+	return nil
+}
+
+// The push settings a transport of another plugin reads are final from any
+// plugin's Init — one listed before live included — once every Configure has run.
 func TestAccessors(t *testing.T) {
 	plugin := live.New(live.Options{})
 	if plugin.KeepAlive() != 25*time.Second || plugin.Prefix() != "/_live/" {
 		t.Errorf("before configuration: KeepAlive %v, Prefix %q", plugin.KeepAlive(), plugin.Prefix())
 	}
-	newSite(t, plugin, collagetest.WithPluginConfig(live.Name, `{"keepAlive":"5s","prefix":"/push/","maxStreamAge":"1h"}`))
-	if plugin.KeepAlive() != 5*time.Second || plugin.Prefix() != "/push/" || plugin.MaxStreamAge() != time.Hour {
-		t.Errorf("KeepAlive %v, Prefix %q, MaxStreamAge %v", plugin.KeepAlive(), plugin.Prefix(), plugin.MaxStreamAge())
+	r := &reader{lv: plugin}
+	collagetest.NewSite(t, collagetest.WithTemplates(map[string]string{"layout.html": `<html><head>{{liveClient}}</head><body>{{slot "content"}}</body></html>`}),
+		collagetest.WithPlugins(r, plugin),
+		collagetest.WithPluginConfig(live.Name, `{"keepAlive":"5s","prefix":"/push/","maxStreamAge":"1h"}`))
+	if r.keepAlive != 5*time.Second || r.prefix != "/push/" || r.aged != time.Hour {
+		t.Errorf("read in an earlier plugin's Init: KeepAlive %v, Prefix %q, MaxStreamAge %v", r.keepAlive, r.prefix, r.aged)
+	}
+}
+
+// With noStream set, Subscribe refuses: a transport's endpoint cannot keep
+// pushing what the operator turned off.
+func TestSubscribeRefusedWithNoStream(t *testing.T) {
+	plugin := live.New(live.Options{})
+	plugin.UseTransport(live.Transport{Kind: "ws", Path: "/_live/ws/"})
+	newSite(t, plugin, collagetest.WithPluginConfig(live.Name, `{"noStream":true}`))
+	_, err := plugin.Subscribe(httptest.NewRequest(http.MethodGet, "/", nil), live.ParseWatches([]string{"/live/cpu"}))
+	if !errors.Is(err, live.ErrNoStream) {
+		t.Fatalf("Subscribe = %v, want ErrNoStream", err)
 	}
 }
 

@@ -60,6 +60,10 @@ func ParseWatches(values []string) []Watch {
 // ErrTooManyFragments is returned by Subscribe for more URLs than MaxFragments.
 var ErrTooManyFragments = errors.New("live: too many fragments for one stream")
 
+// ErrNoStream is returned by Subscribe when NoStream turns pushing off: a
+// transport of another plugin answers its connection with it instead of pushing.
+var ErrNoStream = errors.New("live: pushing is off (noStream)")
+
 // ErrNoFragments is returned by Subscribe given no URL to watch.
 var ErrNoFragments = errors.New("live: no fragment to watch")
 
@@ -102,6 +106,9 @@ type Subscription struct {
 func (p *Plugin) Subscribe(r *http.Request, watches []Watch) (*Subscription, error) {
 	if p.host == nil {
 		return nil, errors.New("live: the plugin has not been initialised")
+	}
+	if p.cfg.NoStream {
+		return nil, ErrNoStream
 	}
 	watches = dedupe(watches)
 	if len(watches) == 0 {
