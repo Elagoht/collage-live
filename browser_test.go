@@ -39,6 +39,7 @@ const browserPage = `<!doctype html><html><head><title>t</title>{{liveClient}}</
 <div id="count" data-collage-fragment="{{fragmentURL "home" "count"}}" data-collage-interval="200ms">{{slot "count"}}</div>
 <form id="add" method="post" action="/_add" data-collage-target="#reply"><input name="item" value="milk"></form>
 <div id="reply"></div>
+<div id="collage">an element the browser names window.collage</div>
 <script>
 document.addEventListener("DOMContentLoaded", async function () {
   var checks = {}, notes = {}, events = [];
@@ -53,7 +54,7 @@ document.addEventListener("DOMContentLoaded", async function () {
     events.push({ target: e.target, detail: e.detail || {} });
   });
   try {
-    check("loaded", !!window.collage && !!window.collageLive);
+    check("loaded", !!window.collage && typeof window.collage.put === "function" && !!window.collageLive);
     var items = document.getElementById("items");
     // Settle: the stream opens, and the copy it sends first is what the page
     // already shows, which changes nothing.

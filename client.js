@@ -138,12 +138,14 @@
       if (!el.isConnected) return;
       // collage-client changes the DOM and fires collage:swap. A morph keeps
       // the field being typed into as the reader left it.
-      if (!window.collage) {
+      // Told by its API: an element with id="collage" sets window.collage too.
+      const client = window.collage;
+      if (!client || typeof client.put !== "function") {
         markStale(el);
         console.error("collage-live: collage-client's script is not on the page; {{liveClient}} includes it");
         return;
       }
-      window.collage.put(el, parsed.content, { morph: el.dataset.collageSwap === "morph", inner: true });
+      client.put(el, parsed.content, { morph: el.dataset.collageSwap === "morph", inner: true });
       s.etag = etag || "";
       s.html = html;
     };
