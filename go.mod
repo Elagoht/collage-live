@@ -3,9 +3,12 @@
 // pushes a fragment when a tag it depends on is invalidated.
 //
 // It requires collage the way any consumer does, and reaches nothing the framework
-// does not offer every plugin.
+// does not offer every plugin; collage-client puts what it receives into the page.
 module github.com/Elagoht/collage-live
 
 go 1.26
 
-require github.com/Elagoht/collage v0.61.4
+require (
+	github.com/Elagoht/collage v0.67.0
+	github.com/Elagoht/collage-client v0.1.1
+)

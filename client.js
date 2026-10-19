@@ -6,7 +6,8 @@
 // and submits forms marked data-collage-target="<selector>" in place.
 // collageLive.pause/resume hold an element still; collageLive.put puts in an
 // answer the page fetched itself. collage:before-swap lets the page take a swap
-// over, to run it inside a transition of its own.
+// over, to run it inside a transition of its own. The DOM is changed by
+// collage-client's collage.put, which {{liveClient}} loads first.
 (() => {
   "use strict";
   const self = document.currentScript;
@@ -76,25 +77,6 @@
     }
   };
 
-  const morph = (from, to) => {
-    const a = [...from.childNodes], b = [...to.childNodes];
-    b.forEach((node, i) => (i < a.length ? patch(a[i], node) : from.appendChild(node)));
-    a.slice(b.length).forEach((node) => node.remove());
-  };
-  const patch = (x, y) => {
-    if (x.nodeType !== y.nodeType || x.nodeName !== y.nodeName || (x.id || y.id) && x.id !== y.id) return x.replaceWith(y);
-    if (x.nodeType !== 1) {
-      if (x.nodeValue !== y.nodeValue) x.nodeValue = y.nodeValue;
-      return;
-    }
-    if (x.isEqualNode(y)) return;
-    for (const { name } of [...x.attributes]) if (!y.hasAttribute(name)) x.removeAttribute(name);
-    for (const { name, value } of [...y.attributes]) if (x.getAttribute(name) !== value) x.setAttribute(name, value);
-    // What the reader is typing into is theirs; the server's copy waits.
-    if (x === document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(x.tagName)) return;
-    morph(x, y);
-  };
-
   const fresh = (el) => {
     stateOf(el).failures = 0;
     el.removeAttribute("data-collage-stale");
@@ -152,11 +134,18 @@
         s.pending = { html, head: null, etag, reset };
         return;
       }
+      // An element no longer in the page has nothing to show.
+      if (!el.isConnected) return;
+      // collage-client changes the DOM and fires collage:swap. A morph keeps
+      // the field being typed into as the reader left it.
+      if (!window.collage) {
+        markStale(el);
+        console.error("collage-live: collage-client's script is not on the page; {{liveClient}} includes it");
+        return;
+      }
+      window.collage.put(el, parsed.content, { morph: el.dataset.collageSwap === "morph", inner: true });
       s.etag = etag || "";
       s.html = html;
-      if (el.dataset.collageSwap === "morph") morph(el, parsed.content);
-      else el.replaceChildren(parsed.content);
-      el.dispatchEvent(new CustomEvent("collage:swap", { bubbles: true }));
     };
     const before = new CustomEvent("collage:before-swap", { bubbles: true, cancelable: true, detail: { swap: apply } });
     if (!el.dispatchEvent(before)) return;

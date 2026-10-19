@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	client "github.com/Elagoht/collage-client"
 	live "github.com/Elagoht/collage-live"
 	"github.com/Elagoht/collage/pkg/collage"
 	"github.com/Elagoht/collage/pkg/collagetest"
@@ -56,7 +57,7 @@ func newSite(t *testing.T, plugin *live.Plugin, extra ...collagetest.SiteOption)
 			WithFragmentPath("en", "/live/cpu", cpu).
 			WithFragmentPath("en", "/live/hello", hello).
 			WithFragmentPath("en", "/live/footer", footer).Build()),
-		collagetest.WithPlugins(plugin),
+		collagetest.WithPlugins(client.New(), plugin),
 	}, extra...)...).App
 	s.app = app
 	s.server = httptest.NewServer(app.Handler())
@@ -125,9 +126,11 @@ func TestClientTagAndScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := readAll(t, res)
-	want := `<script src="/_live/client/client.js" data-collage-worker="/_live/client/worker.js" data-collage-stream="/_live/stream/" data-collage-transport="sse" defer></script>`
-	if !strings.Contains(body, want) {
-		t.Errorf("page does not include the client:\n%s", body)
+	// collage-client's script first, at its content-addressed URL, then live's:
+	// both deferred, so they run in that order.
+	want := `.js" defer></script><script src="/_live/client/client.js" data-collage-worker="/_live/client/worker.js" data-collage-stream="/_live/stream/" data-collage-transport="sse" defer></script>`
+	if !strings.Contains(body, want) || !strings.Contains(body, `<head><script src="/_client/client.`) {
+		t.Errorf("page does not include collage-client's script, then live's:\n%s", body)
 	}
 
 	res, err = http.Get(s.server.URL + "/_live/client/client.js")
@@ -194,7 +197,7 @@ func TestAccessors(t *testing.T) {
 	}
 	r := &reader{lv: plugin}
 	collagetest.NewSite(t, collagetest.WithTemplates(map[string]string{"layout.html": `<html><head>{{liveClient}}</head><body>{{slot "content"}}</body></html>`}),
-		collagetest.WithPlugins(r, plugin),
+		collagetest.WithPlugins(r, client.New(), plugin),
 		collagetest.WithPluginConfig(live.Name, `{"keepAlive":"5s","prefix":"/push/","maxStreamAge":"1h"}`))
 	if r.keepAlive != 5*time.Second || r.prefix != "/push/" || r.aged != time.Hour {
 		t.Errorf("read in an earlier plugin's Init: KeepAlive %v, Prefix %q, MaxStreamAge %v", r.keepAlive, r.prefix, r.aged)
@@ -216,11 +219,21 @@ func TestSubscribeRefusedWithNoStream(t *testing.T) {
 // A negative number, or a duration written as a number, stops the application.
 func TestRefusals(t *testing.T) {
 	for _, config := range []string{`{"maxFragments":-1}`, `{"keepAlive":25}`, `{"maxStreamAge":"-1s"}`, `{"prefix":"live"}`} {
-		if _, err := collagetest.TrySite(t, collagetest.WithPlugins(live.New(live.Options{})),
+		if _, err := collagetest.TrySite(t, collagetest.WithPlugins(client.New(), live.New(live.Options{})),
 			collagetest.WithPluginConfig(live.Name, config)); err == nil {
 			t.Errorf("%s: the application started", config)
 		}
 	}
+}
+
+// Without collage-client, which puts what live receives into the page, the
+// application does not start, wherever client would have been listed.
+func TestRequiresClient(t *testing.T) {
+	_, err := collagetest.TrySite(t, collagetest.WithPlugins(live.New(live.Options{})))
+	if err == nil || !strings.Contains(err.Error(), "add elagoht/client") {
+		t.Errorf("without collage-client: %v, want the application refused", err)
+	}
+	collagetest.NewSite(t, collagetest.WithPlugins(live.New(live.Options{}), client.New()))
 }
 
 // noStream turns push off even when another plugin's transport is in use: the

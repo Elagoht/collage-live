@@ -4,11 +4,13 @@
 // over an event stream.
 //
 //	app, err := collage.New(&collage.Config{
-//		Plugins: []collage.Plugin{live.New(live.Options{})},
+//		Plugins: []collage.Plugin{client.New(), live.New(live.Options{})},
 //	})
 //
-// The layout includes the client, and the page marks what to refresh — the
-// fragment's URL, built by name, and how:
+// It puts what it receives into the page with collage-client's collage.put, so
+// the application registers elagoht/client too; {{liveClient}} includes that
+// script ahead of its own. The layout includes the client, and the page marks
+// what to refresh — the fragment's URL, built by name, and how:
 //
 //	<head>{{liveClient}}</head>
 //
@@ -51,6 +53,8 @@ import (
 	"time"
 
 	"github.com/Elagoht/collage/pkg/collage"
+
+	client "github.com/Elagoht/collage-client"
 )
 
 // Name is the plugin's name, and the key its configuration is found under.
@@ -117,7 +121,7 @@ func New(opts Options) *Plugin {
 }
 
 func (p *Plugin) Name() string    { return Name }
-func (p *Plugin) Version() string { return "0.5.2" }
+func (p *Plugin) Version() string { return "0.6.0" }
 
 // UseTransport has the client push over t instead of the event stream. It is for
 // the plugin serving t, which calls it from its Configure or its Init, or both;
@@ -136,6 +140,9 @@ func (p *Plugin) UseTransport(t Transport) {
 // In Configure rather than Init because a template function has to exist before
 // templates are parsed, and the function has to know the prefix.
 func (p *Plugin) Configure(_ context.Context, host collage.ConfigHost) error {
+	if _, ok := collage.FindPlugin[*client.Plugin](host); !ok {
+		return errors.New("live: no collage-client plugin to put fragments in with; add elagoht/client")
+	}
 	cfg, err := collage.PluginConfig(host, p.cfg)
 	if err != nil {
 		return err
@@ -147,7 +154,9 @@ func (p *Plugin) Configure(_ context.Context, host collage.ConfigHost) error {
 	if !strings.HasPrefix(p.cfg.Prefix, "/") || !strings.HasSuffix(p.cfg.Prefix, "/") {
 		return fmt.Errorf("live: prefix %q must begin and end with a slash", p.cfg.Prefix)
 	}
-	return host.AddTemplateFunc("liveClient", p.clientTag)
+	return host.AddRenderFunc("liveClient", func(rc *collage.RenderContext) any { // any: html/template.FuncMap's own value type
+		return func() (template.HTML, error) { return p.clientTag(rc) }
+	})
 }
 
 func (p *Plugin) applyDefaults() error {
@@ -252,10 +261,16 @@ func (p *Plugin) prefix() string {
 
 func (p *Plugin) clientPrefix() string { return p.prefix() + "client/" }
 
-// clientTag is {{liveClient}}: the script element, naming the push connection
-// the client should open.
-func (p *Plugin) clientTag() template.HTML {
+// clientTag is {{liveClient}}: collage-client's script element, then live's,
+// naming the push connection the client should open. Both are deferred, so the
+// client runs first. A layout that also calls {{clientjs}} loads it once.
+func (p *Plugin) clientTag(rc *collage.RenderContext) (template.HTML, error) {
+	own, err := client.Tag(rc)
+	if err != nil {
+		return "", fmt.Errorf("live: %w", err)
+	}
 	var b strings.Builder
+	b.WriteString(string(own))
 	b.WriteString(`<script src="`)
 	b.WriteString(template.HTMLEscapeString(p.ClientPath()))
 	b.WriteString(`" data-collage-worker="`)
@@ -276,7 +291,7 @@ func (p *Plugin) clientTag() template.HTML {
 		b.WriteString(`" data-collage-transport="sse"`)
 	}
 	b.WriteString(` defer></script>`)
-	return template.HTML(b.String()) // any: an element this function assembled from escaped values
+	return template.HTML(b.String()), nil // elements assembled from client's tag and escaped values
 }
 
 // ErrClosed is returned by Subscription.Wait, and by Subscribe, once the

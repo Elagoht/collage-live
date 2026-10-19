@@ -3,12 +3,15 @@
   "name": "elagoht/live",
   "description": "A collage plugin that keeps parts of a page current in the browser: it serves a small client script that refreshes the fragments a page opened with WithFragmentPath, on an interval or when the server pushes a change over an event stream.",
   "repository": "https://github.com/Elagoht/collage-live",
+  "requires": [
+    "elagoht/client"
+  ],
   "templateFunctions": [
     {
       "name": "liveClient",
       "signature": "liveClient",
       "insert": "liveClient",
-      "doc": "The collage-live client script. Put it in the layout's `<head>`; elements marked `data-collage-fragment` are then kept current."
+      "doc": "The collage-live client script, after collage-client's. Put it in the layout's `<head>`; elements marked `data-collage-fragment` are then kept current."
     }
   ],
   "attributes": [
@@ -30,7 +33,7 @@
     {
       "name": "data-collage-swap",
       "value": "${1|morph,replace|}",
-      "doc": "collage-live: `morph` patches the DOM in place, so a focused input keeps what is typed."
+      "doc": "collage-live: `morph` patches the DOM in place with collage-client's morph, matching elements by id, so a focused input keeps what is typed."
     },
     {
       "name": "data-collage-transition",

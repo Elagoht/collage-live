@@ -5,13 +5,24 @@ small client script that refreshes the fragments a page opened with
 `WithFragmentPath` — on an interval, or when the server pushes a change over an
 event stream.
 
+```
+collage plugin add elagoht/live
+```
+
+adds [elagoht/client](https://github.com/Elagoht/collage-client) too: live puts
+every answer into the page with its `collage.put`, so one morph serves both. By
+hand:
+
 ```go
 app, err := collage.New(&collage.Config{
-	Plugins: []collage.Plugin{live.New(live.Options{})},
+	Plugins: []collage.Plugin{client.New(), live.New(live.Options{})},
 })
 ```
 
-Requires collage v0.61.4 or later.
+Without collage-client, `collage.New` fails with `live: no collage-client plugin
+to put fragments in with; add elagoht/client`.
+
+Requires collage v0.67.0 and collage-client v0.2.0 or later.
 
 ## Marking what to refresh
 
@@ -22,6 +33,10 @@ The layout includes the client:
   {{liveClient}}
 </head>
 ```
+
+`{{liveClient}}` writes collage-client's script and then live's, both deferred, so
+the page needs nothing else. A layout that also calls `{{clientjs}}`, to use
+`collage.morph` itself, loads the script once.
 
 The page marks each part it wants kept current with the fragment's URL, built by
 name, and says how:
@@ -43,7 +58,7 @@ name, and says how:
 | `data-collage-fragment="<url>"` | The fragment path whose answer fills the element |
 | `data-collage-interval="2s"` | Fetch it on this interval (`500ms`, `2s`, `1m`) |
 | `data-collage-push` | Take it from the stream when the server pushes it |
-| `data-collage-swap="morph"` | Patch the DOM in place rather than replacing it, so a focused input keeps what is being typed |
+| `data-collage-swap="morph"` | Patch the DOM in place rather than replacing it, with collage-client's morph: elements are matched by id, so an item added at the top of a list leaves the others as they are, and a focused field keeps what is being typed |
 | `data-collage-transition` | Put each answer in inside a [view transition](#animating-a-swap) |
 | `data-collage-target="<selector>"` | On a form: submit with `fetch` and put the answer into the element |
 
@@ -75,8 +90,11 @@ Style it:
   to the document's head, once, by its key.
 - Drops `<script>` elements from the answer, so a script inside a fragment does not
   run again on every refresh.
+- Puts the answer inside the element with collage-client's `collage.put`, replacing
+  its children or, with `data-collage-swap="morph"`, morphing them.
 - Dispatches `collage:before-swap` just before the element changes, which a page
-  can take over, and `collage:swap` and `collage:stale` on the element.
+  can take over, and `collage:stale` on the element; collage-client dispatches
+  `collage:swap` on it, with `detail: { url: null, mode, inner: true }`.
 
 `window.collageLive.refresh(elementOrURL)` fetches now, and
 `window.collageLive.scan()` picks up elements added after the page loaded.
@@ -359,6 +377,22 @@ live's Init decides whether to serve the event stream. With `noStream` set,
 
 The protocol is collage's own — fragment paths, the `<template data-collage-hoist>`
 channel, ETags — so htmx or a script of your own works against the same server.
+
+## Changed in v0.6.0
+
+- Requires [elagoht/client](https://github.com/Elagoht/collage-client) v0.2.0:
+  register `client.New()`, or `collage plugin add elagoht/live` adds it. Without
+  it the application does not start. The layout does not change:
+  `{{liveClient}}` now writes collage-client's script ahead of its own.
+- Answers go into the page through collage-client's `collage.put`, and
+  `data-collage-swap="morph"` is idiomorph's morph. The old morph matched children
+  by position, so an item added at the top of a list rebuilt every item after it
+  and took the reader's focus and typing with it; idiomorph matches them by id.
+- A focused field keeps its value, as before, but its other attributes and its
+  children — a focused `<select>`'s options — now take the server's.
+- `collage:swap` comes from collage-client and carries
+  `detail: { url: null, mode, inner: true }`; it used to carry none.
+- Requires collage v0.67.0.
 
 ## Changed in v0.5.2
 
