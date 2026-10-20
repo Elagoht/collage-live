@@ -121,7 +121,7 @@ func New(opts Options) *Plugin {
 }
 
 func (p *Plugin) Name() string    { return Name }
-func (p *Plugin) Version() string { return "0.6.0" }
+func (p *Plugin) Version() string { return "0.6.1" }
 
 // UseTransport has the client push over t instead of the event stream. It is for
 // the plugin serving t, which calls it from its Configure or its Init, or both;

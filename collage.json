@@ -6,6 +6,7 @@
   "requires": [
     "elagoht/client"
   ],
+  "setup": "Put `{{liveClient}}` in the layout's `<head>`, in `templates/layouts/default.html`.\nGive the page a path for the fragment, `.WithFragmentPath(\"en\", \"/clock\", clock())`, and wrap it in the page's template: `<section data-collage-fragment=\"{{fragmentURL \"home\" \"clock\"}}\" data-collage-interval=\"2s\">{{slot \"clock\"}}</section>`.\nTo push instead of polling, write `data-collage-push` and call `app.InvalidateTags(ctx, tag)` when the data changes.",
   "templateFunctions": [
     {
       "name": "liveClient",
