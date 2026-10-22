@@ -312,6 +312,61 @@ func TestStream_PersonalFragmentsStayPersonal(t *testing.T) {
 	}
 }
 
+// A Shared render is pushed to the readers of its URL on its own host, and is
+// made with nothing of any one reader's in it. Before, the first reader's render
+// went to every reader of the URL: their cookie, and their host's origin.
+func TestStream_SharedPushStaysOnItsHost(t *testing.T) {
+	var n atomic.Int64
+	tenant := collage.NewFragment("tenant", "t.html").WithData(collage.LoadTagged(func(_ context.Context, rc *collage.RenderContext) (string, []string, error) {
+		who := "anon"
+		if c, err := rc.Request.Cookie("user"); err == nil {
+			who = c.Value
+		}
+		return fmt.Sprintf("host=%s user=%s n=%d", rc.Request.Host, who, n.Load()), []string{"news"}, nil
+	})).Build()
+	page := collage.NewFragment("page", "page.html").WithSlotFragment("tenant", tenant).Build()
+	app := collagetest.NewSite(t,
+		collagetest.WithoutHome(),
+		collagetest.WithTemplates(map[string]string{
+			"page.html": `<html><head>{{liveClient}}</head><body>{{slot "tenant"}}</body></html>`,
+			"t.html":    `<p>{{.}}</p>`,
+		}),
+		collagetest.WithRegister(collage.NewPage("home").WithContent(page).WithPath("en", "/").
+			WithFragmentPath("en", "/live/tenant", tenant).Incremental(time.Minute).Build()),
+		collagetest.WithPlugins(client.New(), live.New(live.Options{})),
+	).App
+	s := &site{app: app, server: httptest.NewServer(app.Handler())}
+	t.Cleanup(s.server.Close)
+
+	openAt := func(host, user string) *events {
+		ctx, cancel := context.WithCancel(context.Background())
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.server.URL+"/_live/stream/?f=/live/tenant", nil)
+		req.Host = host
+		req.AddCookie(&http.Cookie{Name: "user", Value: user})
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { cancel(); res.Body.Close() })
+		return &events{t: t, res: res, lines: bufio.NewScanner(res.Body), cancel: cancel}
+	}
+	a, b, a2 := openAt("a.test", "alice"), openAt("b.test", "bob"), openAt("a.test", "carol")
+	a.next()
+	b.next()
+	a2.next()
+	n.Store(1)
+	_ = app.InvalidateTags(context.Background(), "news")
+	for _, c := range []struct {
+		e    *events
+		want string
+	}{{a, "<p>host=a.test user=anon n=1</p>"}, {b, "<p>host=b.test user=anon n=1</p>"}, {a2, "<p>host=a.test user=anon n=1</p>"}} {
+		if got := c.e.next().HTML; got != c.want {
+			t.Errorf("pushed %q, want %q", got, c.want)
+		}
+	}
+}
+
 // Nothing is reachable over the stream that is not reachable over HTTP.
 func TestStream_RefusesWhatIsNotAFragmentPath(t *testing.T) {
 	s := newSite(t, live.New(live.Options{}))

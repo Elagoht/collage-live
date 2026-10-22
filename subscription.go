@@ -381,9 +381,11 @@ func (h *hub) close() {
 // invalidate re-renders every watched fragment that depended on one of touched,
 // and queues it for its subscription.
 //
-// A render that is Shared — the same for every reader — is made once per URL and
-// handed to everyone watching that URL. Any other render may hold one reader's
-// data: a session, a cookie, a name. It is made for each subscription, with that
+// A render that is Shared — the same for every reader on one host — is made once
+// per URL and host, and handed to everyone watching that URL on that host. Not
+// across hosts: an application serving several gives each its own origin, and
+// what one host's readers see is not another's. Any other render may hold one
+// reader's data: a session, a cookie, a name. It is made for each subscription, with that
 // subscription's own request, and never handed to another. Getting this wrong
 // would send one reader's page to another, which is why the framework, not this
 // plugin, decides what Shared means.
@@ -392,17 +394,24 @@ func (h *hub) close() {
 // one of its readers; only when that render is not Shared is it rendered for the
 // others, each once. Batches still run one after another.
 func (h *hub) invalidate(p *Plugin, touched map[string]bool) {
-	readers := make(map[string][]*Subscription)
-	var urls []string
+	type watched struct{ host, url string }
+	readers := make(map[watched][]*Subscription)
+	var urls []watched
 	for _, s := range h.snapshot() {
 		for _, url := range s.watching(touched) {
-			if _, seen := readers[url]; !seen {
-				urls = append(urls, url)
+			w := watched{s.request.Host, url}
+			if _, seen := readers[w]; !seen {
+				urls = append(urls, w)
 			}
-			readers[url] = append(readers[url], s)
+			readers[w] = append(readers[w], s)
 		}
 	}
-	sort.Strings(urls)
+	sort.Slice(urls, func(i, j int) bool {
+		if urls[i].url != urls[j].url {
+			return urls[i].url < urls[j].url
+		}
+		return urls[i].host < urls[j].host
+	})
 
 	// Two rounds, so no render waits on a slot another is holding: first one
 	// reader per URL, then — for the URLs whose render was not Shared — the rest.
@@ -413,8 +422,8 @@ func (h *hub) invalidate(p *Plugin, touched map[string]bool) {
 	var mu sync.Mutex
 	var rest []job
 	parallel(len(urls), func(i int) {
-		url := urls[i]
-		subs := readers[url]
+		url := urls[i].url
+		subs := readers[urls[i]]
 		first, ok := h.render(p, subs[0], url)
 		if ok && first.Shared {
 			for _, s := range subs[1:] {

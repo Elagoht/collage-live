@@ -390,7 +390,13 @@
     try {
       const res = await fetch(action, init);
       const destination = res.status === 204 && res.headers.get("Collage-Location");
-      if (destination) return location.assign(destination);
+      // Only to a web address. A browser ignores a javascript: Location on a
+      // redirect; location.assign would run it, in this page's origin.
+      if (destination) {
+        const to = new URL(destination, location.href);
+        if (to.protocol !== "http:" && to.protocol !== "https:") throw new Error(to.protocol);
+        return location.assign(to);
+      }
       if (res.redirected) return location.assign(res.url);
       if (!res.ok && res.status !== 422) throw new Error(res.status);
       swap(target, await res.text(), null, "", true);
