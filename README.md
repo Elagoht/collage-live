@@ -276,6 +276,13 @@ made once per URL and sent to every reader of that URL. Any other render may hol
 one reader's data, and is made for each connection with that connection's own
 request. collage decides what `Shared` means, not this plugin.
 
+What a reader may see is not shared. When a guard covers the fragment path — the
+fragment's own, or one on the page that opened it — a `Shared` render is made for
+each connection too, so each reader meets the guard, and one it now refuses is sent
+a stale message instead of the fragment. A fragment path no guard covers, declared
+as a plain path without placeholders, keeps the one render for everyone — and in an
+application where no guard covers any fragment path, every one does.
+
 A connection renders with the cookies it was opened with. A reader who signs out
 in another tab keeps receiving what the old cookie reads until the connection is
 reopened. With sessions checked on the server that is nothing — the render comes out

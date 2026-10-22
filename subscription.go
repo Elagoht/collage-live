@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"runtime"
 	"sort"
 	"strings"
@@ -390,6 +391,14 @@ func (h *hub) close() {
 // would send one reader's page to another, which is why the framework, not this
 // plugin, decides what Shared means.
 //
+// A Shared render is the same for every reader, but whether a reader may see it
+// is not: the fragment path's guards — the page's and the fragment's own — are
+// asked about each reader, and one whose access was revoked on the server must
+// stop receiving it. The framework offers no way to ask a guard without the
+// render, so a URL a guard covers is rendered for each of its readers, as a
+// render that is not Shared is, and a refused reader is sent a stale message.
+// Only a URL known to be unguarded keeps the one render: see unguardedPaths.
+//
 // The renders run on a bounded number of goroutines. A URL is rendered first for
 // one of its readers; only when that render is not Shared is it rendered for the
 // others, each once. Batches still run one after another.
@@ -421,11 +430,12 @@ func (h *hub) invalidate(p *Plugin, touched map[string]bool) {
 	}
 	var mu sync.Mutex
 	var rest []job
+	unguarded := &unguardedPaths{host: p.host}
 	parallel(len(urls), func(i int) {
 		url := urls[i].url
 		subs := readers[urls[i]]
 		first, ok := h.render(p, subs[0], url)
-		if ok && first.Shared {
+		if ok && first.Shared && unguarded.has(url) {
 			for _, s := range subs[1:] {
 				s.deliver(url, first)
 			}
@@ -438,6 +448,73 @@ func (h *hub) invalidate(p *Plugin, touched map[string]bool) {
 		mu.Unlock()
 	})
 	parallel(len(rest), func(i int) { h.render(p, rest[i].s, rest[i].url) })
+}
+
+// unguardedPaths answers whether a fragment URL is reached through a fragment
+// path no guard covers, so a Shared render of it may go to every reader without
+// asking each about. Each batch makes one, and it reads the application's pages
+// the first time it is asked: a batch with no Shared render reads nothing, and a
+// page registered after the last batch is in the next.
+//
+// It errs one way. The framework does not hand a plugin its router, so a URL is
+// matched to the pattern it was declared with only when that pattern is a plain
+// path — no placeholder — and the URL is that path. A placeholder pattern, a
+// locale prefix the router added, a trailing slash: anything it cannot match is
+// taken as guarded, which costs a render per reader and never sends one a
+// fragment its guard would refuse. A plain path some guarded fragment path also
+// declares is taken as guarded too, whichever the router would pick.
+//
+// An application with no guarded fragment path at all is the exception: there
+// every URL is unguarded, placeholders and all, and nothing is matched.
+type unguardedPaths struct {
+	host       collage.Host
+	once       sync.Once
+	anyGuarded bool
+	paths      map[string]bool
+}
+
+func (u *unguardedPaths) has(fragmentURL string) bool {
+	u.once.Do(u.read)
+	if !u.anyGuarded {
+		return true
+	}
+	target, err := url.Parse(fragmentURL)
+	if err != nil {
+		return false
+	}
+	return u.paths[target.Path]
+}
+
+// read finds every fragment path's pattern and whether a guard covers it, as the
+// framework's fragmentGuard decides that: a guard on any layout of the page that
+// opened it or on its content fragment, or the fragment's own.
+func (u *unguardedPaths) read() {
+	u.paths = make(map[string]bool)
+	guarded := make(map[string]bool)
+	for _, page := range u.host.Pages() {
+		pageGuarded := page.ContentFragment != nil && page.ContentFragment.Guard != nil
+		for _, layout := range page.LayoutChain {
+			if layout != nil && layout.Guard != nil {
+				pageGuarded = true
+			}
+		}
+		for _, byPattern := range page.FragmentPaths {
+			for pattern, fragment := range byPattern {
+				isGuarded := pageGuarded || fragment == nil || fragment.Guard != nil
+				u.anyGuarded = u.anyGuarded || isGuarded
+				switch {
+				case strings.ContainsAny(pattern, "{*"):
+				case isGuarded:
+					guarded[pattern] = true
+				default:
+					u.paths[pattern] = true
+				}
+			}
+		}
+	}
+	for pattern := range guarded {
+		delete(u.paths, pattern)
+	}
 }
 
 // parallel runs fn for 0..n-1 on at most GOMAXPROCS goroutines, and returns when

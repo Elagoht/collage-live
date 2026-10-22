@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -540,5 +541,161 @@ func TestStream_MaxStreamAge(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("the stream outlived MaxStreamAge")
+	}
+}
+
+// A Shared render is made once, but every reader it goes to is still asked
+// about by the fragment path's guards: the fragment's own, and the page's. A
+// reader whose access was revoked on the server is sent a stale message, as a
+// render made for them alone would be refused, not the render made for the
+// others. Before, the first reader's render went to every reader of the URL, and
+// a revoked reader kept receiving a guarded fragment until MaxStreamAge.
+//
+// A Shared fragment no guard covers is still rendered once per change, however
+// many read it. Each of four readers is revoked in turn: a revoked reader the
+// hub renders for first is refused and sends everyone down the per-reader path,
+// which would hide the leak were it always the same reader.
+func TestStream_SharedPushAsksEachReadersGuard(t *testing.T) {
+	var revoked sync.Map // user → true, the server's record of who lost access
+	guard := func(_ context.Context, r *http.Request) (*collage.GuardDecision, error) {
+		if c, err := r.Cookie("user"); err == nil {
+			if _, out := revoked.Load(c.Value); out {
+				return &collage.GuardDecision{Status: http.StatusForbidden}, nil
+			}
+		}
+		return nil, nil
+	}
+	var n, boardRenders atomic.Int64
+	shared := func(name string, count *atomic.Int64) *collage.FragmentBuilder {
+		return collage.NewFragment(name, "v.html").WithData(collage.LoadTagged(func(context.Context, *collage.RenderContext) (string, []string, error) {
+			if count != nil {
+				count.Add(1)
+			}
+			return fmt.Sprintf("%s %d", name, n.Load()), []string{"news"}, nil
+		})).Shared()
+	}
+	board := shared("board", &boardRenders).Build()
+	news := shared("news", nil).WithGuard(guard).Build()
+	feed := shared("feed", nil).Build()
+	home := collage.NewFragment("home", "home.html").WithSlotFragment("board", board).WithSlotFragment("news", news).Build()
+	private := collage.NewFragment("private", "private.html").WithSlotFragment("feed", feed).WithGuard(guard).Build()
+	app := collagetest.NewSite(t,
+		collagetest.WithoutHome(),
+		collagetest.WithTemplates(map[string]string{
+			"home.html":    `<html><head>{{liveClient}}</head><body>{{slot "board"}}{{slot "news"}}</body></html>`,
+			"private.html": `<html><head>{{liveClient}}</head><body>{{slot "feed"}}</body></html>`,
+			"v.html":       `<p>{{.}}</p>`,
+		}),
+		collagetest.WithRegister(
+			collage.NewPage("home").WithContent(home).WithPath("en", "/").
+				WithFragmentPath("en", "/live/board", board).
+				WithFragmentPath("en", "/live/news", news).Build(),
+			collage.NewPage("private").WithContent(private).WithPath("en", "/private").
+				WithFragmentPath("en", "/private/feed", feed).Build(),
+		),
+		collagetest.WithPlugins(client.New(), live.New(live.Options{})),
+	).App
+	s := &site{app: app, server: httptest.NewServer(app.Handler())}
+	t.Cleanup(s.server.Close)
+
+	query := "f=/live/board&f=/live/news&f=/private/feed"
+	users := []string{"ada", "bo", "cy", "di"}
+	streams := make(map[string]*events, len(users))
+	for _, user := range users {
+		e := s.open(t, query, &http.Cookie{Name: "user", Value: user})
+		for range 3 {
+			if msg := e.next(); msg.Stale {
+				t.Fatalf("%s's initial %s is stale", user, msg.URL)
+			}
+		}
+		streams[user] = e
+	}
+
+	// Revoked on the server: the cookie a stream was opened with is the same, but
+	// the guard now refuses it. Each reader takes a turn, so whichever the hub
+	// happens to render for first, some round revokes another.
+	for round := int64(1); round <= 8; round++ {
+		out := users[round%int64(len(users))]
+		revoked.Clear()
+		revoked.Store(out, true)
+		n.Store(round)
+		before := boardRenders.Load()
+		if err := app.InvalidateTags(context.Background(), "news"); err != nil {
+			t.Fatal(err)
+		}
+		for _, user := range users {
+			got := map[string]live.Message{}
+			for range 3 {
+				msg := streams[user].next()
+				got[msg.URL] = msg
+			}
+			if want := fmt.Sprintf("<p>board %d</p>", round); got["/live/board"].HTML != want {
+				t.Errorf("round %d: %s's board = %+v, want %q", round, user, got["/live/board"], want)
+			}
+			for _, url := range []string{"/live/news", "/private/feed"} {
+				msg := got[url]
+				if user == out {
+					if !msg.Stale || msg.HTML != "" {
+						t.Errorf("round %d: revoked %s was pushed %s = %+v, want a stale message", round, user, url, msg)
+					}
+					continue
+				}
+				if msg.Stale || !strings.Contains(msg.HTML, fmt.Sprintf(" %d<", round)) {
+					t.Errorf("round %d: %s was pushed %s = %+v", round, user, url, msg)
+				}
+			}
+		}
+		if got := boardRenders.Load() - before; got != 1 {
+			t.Errorf("round %d: the unguarded Shared board was rendered %d times for %d readers, want once", round, got, len(users))
+		}
+	}
+}
+
+// In an application where no guard covers a fragment path, a Shared render is
+// made once per change whatever its path looks like — a placeholder pattern
+// included — however many read it.
+func TestStream_SharedPushRendersOnceWithoutGuards(t *testing.T) {
+	var n, renders atomic.Int64
+	item := collage.NewFragment("item", "item.html").WithData(collage.LoadTagged(func(_ context.Context, rc *collage.RenderContext) (string, []string, error) {
+		renders.Add(1)
+		return fmt.Sprintf("%s %d", rc.PathParams["id"], n.Load()), []string{"items"}, nil
+	})).Shared().Build()
+	page := collage.NewFragment("page", "page.html").WithSlotFragment("item", item).Build()
+	app := collagetest.NewSite(t,
+		collagetest.WithoutHome(),
+		collagetest.WithTemplates(map[string]string{
+			"page.html": `<html><head>{{liveClient}}</head><body>{{slot "item"}}</body></html>`,
+			"item.html": `<p>item {{.}}</p>`,
+		}),
+		collagetest.WithRegister(collage.NewPage("item").WithContent(page).WithPath("en", "/items/{id}").
+			WithFragmentPath("en", "/live/items/{id}", item).Build()),
+		collagetest.WithPlugins(client.New(), live.New(live.Options{})),
+	).App
+	s := &site{app: app, server: httptest.NewServer(app.Handler())}
+	t.Cleanup(s.server.Close)
+
+	var streams []*events
+	for range 4 {
+		e := s.open(t, "f=/live/items/7", nil)
+		if got := e.next().HTML; got != "<p>item 7 0</p>" {
+			t.Fatalf("initial = %q", got)
+		}
+		streams = append(streams, e)
+	}
+	for round := int64(1); round <= 3; round++ {
+		n.Store(round)
+		before := renders.Load()
+		if err := app.InvalidateTags(context.Background(), "items"); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("<p>item 7 %d</p>", round)
+		for _, e := range streams {
+			if got := e.next().HTML; got != want {
+				t.Errorf("round %d: pushed %q, want %q", round, got, want)
+			}
+		}
+		if got := renders.Load() - before; got != 1 {
+			t.Errorf("round %d: rendered %d times for %d readers, want once", round, got, len(streams))
+		}
 	}
 }
