@@ -9,6 +9,6 @@ module github.com/Elagoht/collage-live
 go 1.26
 
 require (
-	github.com/Elagoht/collage v0.67.0
+	github.com/Elagoht/collage v0.71.0
 	github.com/Elagoht/collage-client v0.2.0
 )
